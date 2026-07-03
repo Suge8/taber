@@ -1,0 +1,23 @@
+# build / deps
+node_modules
+.output
+.wxt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# local flow management
+.flow/
+
+# temp / scratch
+scripts/_qc-temp.mjs
+
+# env / secrets (do not commit credentials)
+.env
+.env.*
+!.env.example

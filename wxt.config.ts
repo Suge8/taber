@@ -1,0 +1,72 @@
+import { defineConfig } from 'wxt';
+import tailwindcss from '@tailwindcss/vite';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const rootDir = path.dirname(fileURLToPath(import.meta.url));
+const enableDebugger = process.env.TABER_ENABLE_DEBUGGER === '1';
+const debugArtifact = process.env.TABER_DEBUG_ARTIFACT === '1';
+
+export default defineConfig({
+  modules: ['@wxt-dev/module-svelte'],
+  outDirTemplate: debugArtifact ? '{{browser}}-mv{{manifestVersion}}-dev' : undefined,
+  vite: () => ({
+    define: {
+      __TABER_ENABLE_DEBUGGER__: JSON.stringify(enableDebugger),
+    },
+    plugins: [tailwindcss()],
+    resolve: {
+      alias: {
+        $lib: path.resolve(rootDir, 'lib'),
+      },
+    },
+  }),
+  manifest: {
+    name: 'Taber',
+    description: 'Supervised browser agent side panel.',
+    minimum_chrome_version: '135',
+    permissions: [
+      'storage',
+      'sidePanel',
+      'scripting',
+      'userScripts',
+      'webNavigation',
+      'activeTab',
+      'offscreen',
+      'identity',
+      ...(enableDebugger ? ['debugger'] : []),
+    ],
+    host_permissions: ['https://auth.openai.com/*', 'https://chatgpt.com/*'],
+    optional_host_permissions: ['http://*/*', 'https://*/*'],
+    icons: {
+      16: '/icons/icon-16.png',
+      24: '/icons/icon-24.png',
+      32: '/icons/icon-32.png',
+      48: '/icons/icon-48.png',
+      96: '/icons/icon-96.png',
+      128: '/icons/icon-128.png',
+    },
+    action: {
+      default_title: 'Taber',
+      default_icon: {
+        16: '/icons/icon-16.png',
+        24: '/icons/icon-24.png',
+        32: '/icons/icon-32.png',
+      },
+    },
+    commands: {
+      'toggle-side-panel': {
+        suggested_key: {
+          default: 'Alt+E',
+          mac: 'Command+E',
+          windows: 'Alt+E',
+          linux: 'Alt+E',
+          chromeos: 'Alt+E',
+        },
+        description: 'Open or close the Taber side panel',
+      },
+    },
+    side_panel: { default_path: 'sidepanel.html' },
+    sandbox: { pages: ['sandbox.html'] },
+  },
+});

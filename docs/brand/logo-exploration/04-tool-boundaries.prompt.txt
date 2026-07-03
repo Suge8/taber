@@ -1,0 +1,16 @@
+Create one pure black-and-white minimalist logo exploration board for the product TABER.
+
+Project truth to understand before designing:
+TABER is a supervised browser Agent for Chrome/Edge side panel. It helps users read webpages, understand page state, collect information, fill ordinary forms, navigate tabs, and explain console/network failures while the user watches and can stop the task. Personality: calm, precise, accountable. It is a trustworthy operator console, not a chatbot toy, invisible automation, anti-detection tool, raw DevTools clone, or decorative AI SaaS dashboard. Core ideas: visible tool evidence, task timeline, interruptible control, browser tab context, narrow fixed tools, event log as source of truth, offscreen AgentHost, Chrome API broker, document/image/navigation/REPL/debugger boundaries. Visual tone: Linear / Notion / Arc-like calm precision, dense clarity, monochrome, precise 1px logic, small status marks, operator console.
+
+Board requirements:
+Pure white background. No border, no shadow, no mockup, no scene, no decoration. Like an international top-tier graphic design studio logo archive / minimalist identity exploration board.
+Use a loose 4-column x 6-row grid: exactly 24 distinct logo directions around TABER. Each logo centered with generous whitespace. Black graphics, white negative space, geometric masses, minimalist lines, experimental typography. Tiny gray only if needed. Optional tiny TM marks. Overall black-white minimalist.
+All visible brand text must be clear English, preferably TABER, TBR, TAB, AGENT, or short modern English 3-10 letters. No gibberish. No misspelling. Use Helvetica, Futura, DIN, Akzidenz-Grotesk, high contrast serif, rounded sans, extra bold grotesk, narrow tall, wide flat, or experimental modified type.
+Do not make surface-level browser icons only. Compress the product's meaning into memorable symbols: supervised action, side panel, tab stacks, observation, evidence trail, stop/resume control, browser navigation, tool boundary, event log, accountable agent.
+May use: abstract mascot, geometric badge, negative-space metaphor, letter fusion, circular symbol, square module, arced wordmark, experimental type, constructivist collage, linear symbol, heavy black blocks, symbol+wordmark, visual pun, repeated rhythm, directional offset, symbol system, minimal face, abstract animal, product silhouette translation, space structure translation, function action translation, emotional graph, initial T transformation, signature wordmark.
+Reference design thinking: Paul Rand visual wit, Otl Aicher symbol systems, Chermayeff & Geismar reduction, Lance Wyman geometry, Josef Müller-Brockmann rational order. Do not copy existing works.
+Negative prompt: no complex illustration, no cartoon pileup, no 3D, no material lighting, no colors, no background texture, no web page header/footer, no bottom numbering, no copyright text, no app screenshots, no generic AI sparkle, no robot cliché, no shield cliché, no hidden surveillance vibe.
+
+Focus concept axis: fixed tool boundary. Explore five-tool systems: document, image, navigate, REPL, debugger. Use modular pentads, constrained tool belts, separated capabilities, brokered boundaries, small symbol families compressed into a master mark.
+Final output: a single square PNG containing the 24-logo board only.
