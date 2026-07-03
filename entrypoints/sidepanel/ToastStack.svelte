@@ -24,15 +24,15 @@
   }
 
   function toneIconClass(tone: ToastTone) {
-    if (tone === 'success') return 'bg-success/10 text-success';
-    if (tone === 'error') return 'bg-danger/10 text-danger';
-    return 'bg-surface-2 text-muted-foreground';
+    if (tone === 'success') return 'bg-[var(--permission-success-badge)] text-[var(--permission-success-ink)]';
+    if (tone === 'error') return 'bg-[color-mix(in_oklch,var(--danger-bg)_76%,var(--surface))] text-danger';
+    return 'bg-[color-mix(in_oklch,var(--accent)_10%,var(--surface-2))] text-foreground';
   }
 
   function toneSurfaceClass(tone: ToastTone) {
-    if (tone === 'success') return 'bg-[color-mix(in_oklch,var(--surface)_92%,var(--success-bg))] ring-success/20';
-    if (tone === 'error') return 'bg-[color-mix(in_oklch,var(--surface)_90%,var(--danger-bg))] ring-danger/20';
-    return 'bg-surface/94 ring-line/80';
+    if (tone === 'success') return 'bg-[var(--permission-success-card)] ring-[var(--permission-success-border)]';
+    if (tone === 'error') return 'bg-[color-mix(in_oklch,var(--surface)_72%,var(--danger-bg))] ring-[color-mix(in_oklch,var(--danger-ink)_36%,transparent)]';
+    return 'bg-[color-mix(in_oklch,var(--surface)_88%,var(--accent))] ring-[color-mix(in_oklch,var(--accent)_16%,transparent)]';
   }
 </script>
 

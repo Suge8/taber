@@ -28,14 +28,6 @@ export function requestAllSitesAccess() {
   return browser.permissions.request({ origins: [...allSitesOrigins] });
 }
 
-export async function completeBrowserControl() {
-  const state = await readBrowserControlState();
-  if (!state.userScriptsAvailable) throw new Error('Allow User Scripts is not enabled for Taber. Open extension details, enable it, then return to Taber.');
-  if (!state.allSites) throw new Error('All websites access is not enabled for Taber. Click Allow all websites, then confirm Chrome permission.');
-  await setPageScriptConsent(true);
-  return readBrowserControlState();
-}
-
 async function setPageScriptConsent(value: boolean) {
   await database.settings.put({ key: browserPageScriptConsentKey, value });
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { projectAgentEvents } from '../lib/agent-event-projection.ts';
-import { createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, hideReasoningText, latestImagePreview, orderQuickActions } from '../lib/sidepanel-view.ts';
+import { createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, hideReasoningText, latestImagePreview, orderQuickActions, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
 import { detectLocale, formatTime, messages as sidepanelMessages } from '../lib/sidepanel-i18n.ts';
 
 const events = [
@@ -152,7 +152,13 @@ const interleavedTimelineEntries = deriveTimeline([
 ]);
 assert.deepEqual(interleavedTimelineEntries[1].kind === 'assistantTurn' ? interleavedTimelineEntries[1].turn.parts.map((part) => part.kind) : [], ['text', 'tool', 'text']);
 assert.deepEqual(orderQuickActions({ title: 'Product detail', url: 'https://shop.example/item/1' }).slice(0, 2), ['compare', 'summarize']);
-assert.deepEqual(orderQuickActions({ title: 'API docs', url: 'https://example.com/docs' }).slice(0, 2), ['summarize', 'translate']);
+assert.deepEqual(orderQuickActions({ title: 'API docs', url: 'https://example.com/docs' }).slice(0, 2), ['summarize', 'skills']);
+const manualBrowserControlGuide = settingsTabStartsBrowserControlGuide('preferences', true);
+assert.equal(manualBrowserControlGuide, true);
+assert.equal(settingsTabStartsBrowserControlGuide('providers', true), false);
+assert.equal(shouldAdvanceToProviderSetup({ settingsOpen: true, promptedForBrowserControl: manualBrowserControlGuide, missingBrowserControl: false, hasAnyModel: false, promptedForMissingModel: false }), true);
+assert.equal(shouldAdvanceToProviderSetup({ settingsOpen: true, promptedForBrowserControl: manualBrowserControlGuide, missingBrowserControl: false, hasAnyModel: true, promptedForMissingModel: false }), false);
+
 assert.equal(createIntentPrompt('research', '', [], sidepanelMessages.en.prompts), sidepanelMessages.en.prompts.researchPage);
 assert.equal(createIntentPrompt('compare', 'camera', [], sidepanelMessages.en.prompts), sidepanelMessages.en.prompts.compareTopic('camera'));
 assert.match(createIntentPrompt('research', 'agents', [{ title: 'A', url: 'https://a.example' }, { title: '', url: 'https://b.example/path' }], sidepanelMessages.en.prompts), /agents[\s\S]*https:\/\/a\.example[\s\S]*b\.example/);

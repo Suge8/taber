@@ -35,11 +35,12 @@
   interface Props {
     locale: Locale;
     variant?: 'onboarding' | 'panel';
+    spotlight?: boolean;
     onChanged?: () => void | Promise<void>;
     notify?: Notify;
   }
 
-  let { locale, variant = 'panel', onChanged, notify }: Props = $props();
+  let { locale, variant = 'panel', spotlight = false, onChanged, notify }: Props = $props();
   let t = $derived(messages[locale].provider);
 
   let providers = $state<ProviderWithModels[]>([]);
@@ -392,7 +393,7 @@
       </section>
     {/if}
 
-    <section class="space-y-3">
+    <section class="space-y-3 {spotlight ? 'fx-spotlight fx-spotlight-frame' : ''}">
       {#if !codexConnected}
         <CodexLoginCard {locale} provider={codexProvider} onChanged={refresh} {notify} />
       {/if}

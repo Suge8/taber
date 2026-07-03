@@ -20,6 +20,16 @@
   --danger-ink: oklch(0.52 0.17 25);
   --success-bg: oklch(0.95 0.03 150);
   --success-ink: oklch(0.48 0.1 150);
+  --permission-success-card: oklch(0.955 0.04 160);
+  --permission-success-border: oklch(0.76 0.105 160);
+  --permission-success-soft: oklch(0.84 0.075 160 / 0.28);
+  --permission-success-badge: oklch(0.9 0.055 160);
+  --permission-success-ink: oklch(0.43 0.12 160);
+  --quick-skill-bg: oklch(0.955 0.035 305);
+  --quick-skill-bg-hover: oklch(0.935 0.045 305);
+  --quick-skill-ink: oklch(0.43 0.14 305);
+  --quick-skill-border: oklch(0.78 0.08 305 / 0.55);
+  --quick-skill-shadow: oklch(0.45 0.13 305 / 0.1);
   --warn-bg: oklch(0.96 0.04 85);
   --warn-ink: oklch(0.55 0.12 75);
 
@@ -69,6 +79,16 @@
   --danger-ink: oklch(0.88 0.1 25);
   --success-bg: oklch(0.3 0.05 150);
   --success-ink: oklch(0.85 0.09 150);
+  --permission-success-card: oklch(0.29 0.055 160);
+  --permission-success-border: oklch(0.5 0.095 160);
+  --permission-success-soft: oklch(0.62 0.1 160 / 0.1);
+  --permission-success-badge: oklch(0.34 0.065 160);
+  --permission-success-ink: oklch(0.84 0.105 160);
+  --quick-skill-bg: oklch(0.28 0.055 305);
+  --quick-skill-bg-hover: oklch(0.32 0.065 305);
+  --quick-skill-ink: oklch(0.86 0.08 305);
+  --quick-skill-border: oklch(0.55 0.12 305 / 0.55);
+  --quick-skill-shadow: oklch(0.55 0.12 305 / 0.12);
   --warn-bg: oklch(0.34 0.07 85);
   --warn-ink: oklch(0.88 0.1 80);
 }
@@ -87,6 +107,16 @@
     --danger-ink: oklch(0.88 0.1 25);
     --success-bg: oklch(0.3 0.05 150);
     --success-ink: oklch(0.85 0.09 150);
+    --permission-success-card: oklch(0.29 0.055 160);
+    --permission-success-border: oklch(0.5 0.095 160);
+    --permission-success-soft: oklch(0.62 0.1 160 / 0.1);
+    --permission-success-badge: oklch(0.34 0.065 160);
+    --permission-success-ink: oklch(0.84 0.105 160);
+    --quick-skill-bg: oklch(0.28 0.055 305);
+    --quick-skill-bg-hover: oklch(0.32 0.065 305);
+    --quick-skill-ink: oklch(0.86 0.08 305);
+    --quick-skill-border: oklch(0.55 0.12 305 / 0.55);
+    --quick-skill-shadow: oklch(0.55 0.12 305 / 0.12);
     --warn-bg: oklch(0.34 0.07 85);
     --warn-ink: oklch(0.88 0.1 80);
   }
@@ -324,6 +354,24 @@
       transform: translateY(-3px);
     }
   }
+  .quick-action-summarize {
+    --tw-ring-color: color-mix(in oklch, var(--accent) 26%, transparent);
+    background: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: 0 8px 22px color-mix(in oklch, var(--accent) 12%, transparent);
+  }
+  .quick-action-summarize:hover {
+    background: color-mix(in oklch, var(--accent) 90%, var(--surface));
+  }
+  .quick-action-skills {
+    --tw-ring-color: var(--quick-skill-border);
+    background: var(--quick-skill-bg);
+    color: var(--quick-skill-ink);
+    box-shadow: 0 7px 18px var(--quick-skill-shadow);
+  }
+  .quick-action-skills:hover {
+    background: var(--quick-skill-bg-hover);
+  }
   .composer-shell {
     position: relative;
     display: grid;
@@ -402,25 +450,6 @@
     transform: scale(1);
     filter: blur(0);
   }
-  .fx-liquid-chip {
-    position: relative;
-    grid-column: 2;
-    isolation: isolate;
-    overflow: hidden;
-    background: color-mix(in oklch, var(--surface-2) 68%, transparent);
-  }
-  .fx-liquid-chip::before {
-    content: "";
-    position: absolute;
-    inset: -70% -28%;
-    z-index: -1;
-    background:
-      radial-gradient(circle at 28% 42%, color-mix(in oklch, var(--accent) 18%, transparent), transparent 34%),
-      radial-gradient(circle at 74% 62%, color-mix(in oklch, var(--accent) 12%, transparent), transparent 30%);
-    opacity: 0.65;
-    filter: blur(12px);
-    animation: fxLiquidDrift 3.4s ease-in-out infinite alternate;
-  }
   .fx-running-pulse {
     animation: fxRunningPulse 1.5s var(--ease-out) infinite;
   }
@@ -430,6 +459,61 @@
   }
   .fx-breathe {
     animation: fxBreathe 2.2s ease-in-out infinite;
+  }
+  /* Onboarding spotlight: dim other prefs sections, reveal the one to act on. */
+  [data-spotlight] [data-slot="dialog-close"] {
+    opacity: 0.3;
+    filter: blur(3px);
+    transition: opacity 300ms var(--ease-out), filter 300ms var(--ease-out);
+  }
+  .fx-spotlight {
+    position: relative;
+    padding: 1rem;
+    margin: -1rem;
+    border-radius: 1.75rem;
+    background: color-mix(in oklch, var(--accent) 5%, transparent);
+    box-shadow:
+      inset 0 0 0 1.6px color-mix(in oklch, var(--accent) 36%, transparent),
+      0 0 22px 4px color-mix(in oklch, var(--accent) 10%, transparent);
+    animation: fxSpotlightGlow 2.8s ease-in-out infinite alternate;
+  }
+  .fx-spotlight-frame {
+    margin: 0;
+  }
+  @keyframes fxSpotlightGlow {
+    from {
+      box-shadow:
+        inset 0 0 0 1.6px color-mix(in oklch, var(--accent) 30%, transparent),
+        0 0 16px 2px color-mix(in oklch, var(--accent) 7%, transparent);
+    }
+    to {
+      box-shadow:
+        inset 0 0 0 1.6px color-mix(in oklch, var(--accent) 40%, transparent),
+        0 0 28px 6px color-mix(in oklch, var(--accent) 13%, transparent);
+    }
+  }
+  .permission-card-pending {
+    background-color: var(--surface);
+    border-color: color-mix(in oklch, var(--line) 82%, transparent);
+  }
+  .permission-card-granted {
+    background-color: var(--permission-success-card);
+    border-color: var(--permission-success-border);
+    box-shadow: inset 0 0 0 1px var(--permission-success-soft);
+  }
+  .permission-card-complete {
+    background-color: var(--surface);
+    border-color: var(--permission-success-border);
+  }
+  .permission-badge-granted {
+    background: var(--permission-success-badge);
+    border-color: var(--permission-success-border);
+    color: var(--permission-success-ink);
+  }
+  .permission-badge-complete {
+    background: transparent;
+    border-color: var(--permission-success-border);
+    color: var(--permission-success-ink);
   }
   .taber-logo-image {
     background-image: url('/brand/taber-logo.png');

@@ -36,8 +36,16 @@ export type ToolTimelineItem = ProjectedToolRun & {
 
 export type SourceLink = { label: string; url: string; domain: string; faviconUrl?: string; tabId?: number; windowId?: number };
 export type ImagePreview = { src: string; label: string; alt: string };
-export type QuickActionMode = 'summarize' | 'research' | 'translate' | 'compare';
+export type QuickActionMode = 'summarize' | 'research' | 'skills' | 'compare';
 export type IntentQuickActionMode = Extract<QuickActionMode, 'research' | 'compare'>;
+export type SettingsTab = 'preferences' | 'providers';
+export type ProviderSetupAdvanceInput = {
+  settingsOpen: boolean;
+  promptedForBrowserControl: boolean;
+  missingBrowserControl: boolean;
+  hasAnyModel: boolean;
+  promptedForMissingModel: boolean;
+};
 export type QuickActionTab = { title: string; url: string };
 export type QuickActionPromptSet = {
   researchPage: string;
@@ -138,12 +146,20 @@ export function latestImagePreview(events: AgentEvent[], labels = { image: 'imag
   return imagePreviewFromProjection(projectAgentEvents(events), labels);
 }
 
+export function settingsTabStartsBrowserControlGuide(tab: SettingsTab, missingBrowserControl: boolean): boolean {
+  return tab === 'preferences' && missingBrowserControl;
+}
+
+export function shouldAdvanceToProviderSetup(input: ProviderSetupAdvanceInput): boolean {
+  return input.settingsOpen && input.promptedForBrowserControl && !input.missingBrowserControl && !input.hasAnyModel && !input.promptedForMissingModel;
+}
+
 export function orderQuickActions(context: Record<string, unknown> | undefined): QuickActionMode[] {
   const text = `${readString(context?.title) ?? ''} ${readString(context?.url) ?? ''}`;
-  if (shopPattern.test(text)) return ['compare', 'summarize', 'translate', 'research'];
-  if (researchPattern.test(text)) return ['research', 'summarize', 'translate', 'compare'];
-  if (articlePattern.test(text)) return ['summarize', 'translate', 'research', 'compare'];
-  return ['summarize', 'translate', 'research', 'compare'];
+  if (shopPattern.test(text)) return ['compare', 'summarize', 'skills', 'research'];
+  if (researchPattern.test(text)) return ['research', 'summarize', 'skills', 'compare'];
+  if (articlePattern.test(text)) return ['summarize', 'skills', 'research', 'compare'];
+  return ['summarize', 'skills', 'research', 'compare'];
 }
 
 export function createIntentPrompt(mode: IntentQuickActionMode, topic: string, tabs: QuickActionTab[], prompts: QuickActionPromptSet): string {

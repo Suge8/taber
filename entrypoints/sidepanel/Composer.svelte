@@ -12,6 +12,7 @@
     type ChatStatus,
   } from '$lib/components/ai-elements/prompt-input/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
+  import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
   import { createIntentPrompt, orderQuickActions, type IntentQuickActionMode, type QuickActionMode } from '$lib/sidepanel-view.ts';
   import type { ProviderWithModels, ReasoningEffort } from '$lib/provider-store.ts';
@@ -25,8 +26,8 @@
   import PaperPlaneTilt from 'phosphor-svelte/lib/PaperPlaneTilt';
   import Robot from 'phosphor-svelte/lib/Robot';
   import Scales from 'phosphor-svelte/lib/Scales';
+  import Sparkle from 'phosphor-svelte/lib/Sparkle';
   import Square from 'phosphor-svelte/lib/Square';
-  import Translate from 'phosphor-svelte/lib/Translate';
   import X from 'phosphor-svelte/lib/X';
 
   export type WindowTab = { id: number; title: string; url: string; favIconUrl?: string; active?: boolean };
@@ -83,10 +84,11 @@
   let tabsVisible = $state(false);
   let modelPickerOpen = $state(false);
   let reasoningPickerOpen = $state(false);
+  let skillsOpen = $state(false);
   let intentError = $state('');
   let tabsLoadToken = 0;
 
-  const icons = { summarize: FileText, research: MagnifyingGlass, translate: Translate, compare: Scales } as const;
+  const icons = { summarize: FileText, research: MagnifyingGlass, skills: Sparkle, compare: Scales } as const;
   const microSlide = { duration: 160, easing: cubicOut };
   const baseSlide = { duration: 180, easing: cubicOut };
 
@@ -108,7 +110,7 @@
 
   function suggestionLabel(mode: QuickActionMode) {
     if (mode === 'summarize') return q.summarize;
-    if (mode === 'translate') return q.translate;
+    if (mode === 'skills') return q.skills;
     if (mode === 'compare') return q.compare;
     return q.research;
   }
@@ -119,9 +121,8 @@
       await submitPrompt(p.summarize);
       return;
     }
-    if (mode === 'translate') {
-      cancelIntent();
-      await submitPrompt(p.translate);
+    if (mode === 'skills') {
+      skillsOpen = true;
       return;
     }
     await openIntent(mode);
@@ -213,10 +214,12 @@
     return locale === 'en' ? 'grid grid-cols-2 gap-1.5' : 'grid grid-cols-4 gap-1.5';
   }
 
-  function quickActionClass(selected: boolean) {
+  function quickActionClass(mode: QuickActionMode, selected: boolean) {
     const base = 'inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-[12.5px] ring-1 transition-[background-color,color,box-shadow,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]';
     if (activeIntent && !selected) return `${base} pointer-events-none invisible scale-[0.98] bg-surface text-muted-foreground opacity-0 ring-line/60`;
     if (selected) return `${base} ${activeIntent ? '' : 'fx-enter'} bg-primary text-primary-foreground ring-primary/20 shadow-[0_6px_18px_oklch(0_0_0_/_0.06)]`;
+    if (mode === 'summarize') return `${base} fx-enter quick-action-summarize`;
+    if (mode === 'skills') return `${base} fx-enter quick-action-skills`;
     return `${base} fx-enter bg-surface ring-line/60 text-muted-foreground shadow-[0_4px_14px_oklch(0_0_0_/_0.018)] hover:bg-surface-2 hover:text-foreground hover:ring-line`;
   }
 
@@ -229,7 +232,7 @@
         {@const selected = activeIntent === item.mode}
         <button
           type="button"
-          class={quickActionClass(selected)}
+          class={quickActionClass(item.mode, selected)}
           style="--fx-index: {index}"
           title={suggestionLabel(item.mode)}
           aria-pressed={selected}
@@ -244,6 +247,16 @@
     </div>
   </div>
 {/if}
+
+<Dialog.Root bind:open={skillsOpen}>
+  <Dialog.Content class="min-h-56 w-[min(92vw,24rem)] gap-0 overflow-hidden rounded-2xl p-0">
+    <header class="px-5 pb-3 pt-4">
+      <Dialog.Title class="text-[15px] font-semibold tracking-tight text-foreground">{q.skills}</Dialog.Title>
+      <Dialog.Description class="sr-only">{q.skills}</Dialog.Description>
+    </header>
+    <div class="min-h-44"></div>
+  </Dialog.Content>
+</Dialog.Root>
 
 <div class="composer-shell ring-line/80 ring-1 {running ? 'is-running' : ''} {activeIntent ? 'is-intent' : ''}">
   <div class="composer-shell-input" inert={running} aria-hidden={running}>
@@ -374,16 +387,16 @@
   </PromptInput>
   </div>
   <section class="composer-shell-running" inert={!running} aria-hidden={!running}>
-    <div class="fx-liquid-chip flex min-w-0 items-center gap-2.5 rounded-[1.15rem] px-3 py-2.5">
-      <span class="bg-primary/10 text-primary relative flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-xl">
-        <span class="fx-running-pulse bg-primary/15 absolute inset-1 rounded-lg"></span>
-        <CursorClick class="fx-running-cursor relative size-4" weight="duotone" />
+    <div class="col-start-2 flex min-w-0 items-center gap-3 px-2 py-2">
+      <span class="bg-primary/10 text-primary relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl">
+        <span class="fx-running-pulse bg-primary/15 absolute inset-1.5 rounded-xl"></span>
+        <CursorClick class="fx-running-cursor relative size-5" weight="duotone" />
       </span>
-      <p class="truncate text-[13px] font-medium text-foreground">{t.runningTitle}</p>
+      <p class="truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">{t.runningTitle}</p>
     </div>
     <button
       type="button"
-      class="bg-surface ring-line/80 hover:bg-surface-2 col-start-3 flex size-9 shrink-0 items-center justify-center justify-self-end rounded-full text-foreground ring-1 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
+      class="bg-surface ring-line/80 hover:bg-surface-2 col-start-3 flex size-10 shrink-0 items-center justify-center justify-self-end rounded-full text-foreground ring-1 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
       aria-label={t.stop}
       title={t.stop}
       onclick={() => void onStop()}

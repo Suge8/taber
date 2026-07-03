@@ -1,27 +1,34 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import Check from 'phosphor-svelte/lib/Check';
+  import ArrowRight from 'phosphor-svelte/lib/ArrowRight';
+  import ArrowSquareOut from 'phosphor-svelte/lib/ArrowSquareOut';
+  import CodeSimple from 'phosphor-svelte/lib/CodeSimple';
+  import GlobeSimple from 'phosphor-svelte/lib/GlobeSimple';
   import { browser } from 'wxt/browser';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
   import { Button } from '$lib/components/ui/button/index.js';
-  import { completeBrowserControl, readBrowserControlState, requestAllSitesAccess, type BrowserControlState } from './browser-access.ts';
+  import { readBrowserControlState, requestAllSitesAccess, type BrowserControlState } from './browser-access.ts';
   import type { Notify } from './toast.ts';
 
   interface Props {
     locale: Locale;
-    windowId?: number;
-    variant?: 'settings' | 'onboarding';
+    spotlight?: boolean;
     notify?: Notify;
     onChanged?: (state: BrowserControlState) => void | Promise<void>;
     onDone?: () => void | Promise<void>;
   }
 
-  let { locale, variant = 'settings', notify, onChanged, onDone }: Props = $props();
+  let { locale, spotlight = false, notify, onChanged, onDone }: Props = $props();
   let accessState: BrowserControlState = $state({ allSites: false, pageScriptConsent: false, userScriptsAvailable: false, ready: false });
   let loading = $state(true);
   let busy = $state('');
   let error = $state('');
 
   let t = $derived(messages[locale].browserAccess);
+  let userScriptsGranted = $derived(accessState.userScriptsAvailable);
+  let allSitesGranted = $derived(accessState.allSites);
+  let allPermissionsGranted = $derived(userScriptsGranted && allSitesGranted);
 
   onMount(() => {
     void refresh();
@@ -48,30 +55,14 @@
   }
 
   async function grantAllSites() {
-    await run('all-sites', async () => {
-      const granted = await requestAllSitesAccess();
-      if (!granted) throw new Error(t.denied);
-    });
-  }
-
-  async function complete() {
-    await run('done', async () => {
-      accessState = await completeBrowserControl();
-      await onDone?.();
-    });
-  }
-
-  function openExtensionDetails() {
-    void browser.tabs.create({ url: `chrome://extensions/?id=${browser.runtime.id}`, active: true }).catch(() => undefined);
-  }
-
-  async function run(key: string, action: () => Promise<void>) {
-    busy = key;
+    busy = 'all-sites';
     error = '';
     try {
-      await action();
+      const granted = await requestAllSitesAccess();
       await refresh();
+      if (!granted) return;
       notify?.({ tone: 'success', text: t.saved });
+      if (accessState.ready) await onDone?.();
     } catch (nextError) {
       error = describe(nextError) || t.failed;
       notify?.({ tone: 'error', text: error });
@@ -80,9 +71,8 @@
     }
   }
 
-  function statusLabel(ok: boolean) {
-    if (loading) return '…';
-    return ok ? t.allowed : t.notAllowed;
+  function openExtensionDetails() {
+    void browser.tabs.create({ url: `chrome://extensions/?id=${browser.runtime.id}`, active: true }).catch(() => undefined);
   }
 
   function describe(value: unknown) {
@@ -90,41 +80,84 @@
   }
 </script>
 
-<section class={`fx-enter space-y-3 ${variant === 'onboarding' ? 'rounded-2xl border border-line/80 bg-surface/80 p-4' : ''}`}>
-  <div class="space-y-1">
+<section class="space-y-2 {spotlight ? 'fx-spotlight' : ''}">
+  <header>
     <p class="text-[13px] font-semibold text-foreground">{t.title}</p>
-    <p class="text-muted-foreground text-[12px] leading-relaxed">{t.description}</p>
-  </div>
+  </header>
 
-  <div class="space-y-2">
-    <div class="rounded-xl border border-line/70 bg-surface p-3">
-      <div class="flex items-start justify-between gap-3">
+  <ol class="space-y-2">
+    <li
+      class="rounded-xl border px-3 py-2.5 transition-colors duration-300 ease-[var(--ease-out)] {userScriptsGranted
+        ? allPermissionsGranted ? 'permission-card-complete' : 'permission-card-granted'
+        : 'permission-card-pending'}"
+    >
+      <div class="grid grid-cols-[auto_1fr_auto] items-start gap-3">
+        <span
+          class="mt-px grid size-5 shrink-0 place-items-center rounded-md border transition-colors duration-300 ease-[var(--ease-out)] {userScriptsGranted
+            ? allPermissionsGranted ? 'permission-badge-complete' : 'permission-badge-granted'
+            : 'border-line/80 bg-surface/40 text-transparent'}"
+        >
+          {#if userScriptsGranted}
+            <Check class="size-3" weight="bold" />
+          {/if}
+        </span>
         <div class="min-w-0 space-y-1">
-          <p class="text-[12.5px] font-medium text-foreground">{t.userScripts}</p>
-          <p class="text-muted-foreground text-[11.5px] leading-relaxed">{t.userScriptsDescription}</p>
+          <p class="flex items-center gap-1.5 text-[12.5px] font-medium transition-colors duration-300 ease-[var(--ease-out)] {userScriptsGranted ? 'text-muted-foreground' : 'text-foreground'}">
+            <CodeSimple class="text-muted-foreground size-3.5 shrink-0" weight="bold" />
+            <span>{t.userScripts}</span>
+          </p>
+          <div class="text-muted-foreground flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[11px] leading-relaxed">
+            {#each t.userScriptsDescription.split('|') as step, i}
+              {#if i > 0}<ArrowRight class="size-3 shrink-0" weight="bold" />{/if}
+              <span>{step}</span>
+            {/each}
+          </div>
         </div>
-        <span class="shrink-0 rounded-full border border-line/70 px-2 py-0.5 text-[10.5px] text-muted-foreground">{statusLabel(accessState.userScriptsAvailable)}</span>
+        <div class="flex shrink-0 items-center pt-0.5">
+          {#if !userScriptsGranted}
+            <Button size="sm" variant="outline" disabled={busy !== ''} onclick={openExtensionDetails}>
+              <ArrowSquareOut class="size-3.5" />
+              {t.openExtensionDetails}
+            </Button>
+          {/if}
+        </div>
       </div>
-      <Button class="mt-3 h-8 w-full text-[12px]" variant="outline" disabled={busy !== ''} onclick={openExtensionDetails}>{t.openExtensionDetails}</Button>
-    </div>
+    </li>
 
-    <div class="rounded-xl border border-line/70 bg-surface p-3">
-      <div class="flex items-start justify-between gap-3">
+    <li
+      class="rounded-xl border px-3 py-2.5 transition-colors duration-300 ease-[var(--ease-out)] {allSitesGranted
+        ? allPermissionsGranted ? 'permission-card-complete' : 'permission-card-granted'
+        : 'permission-card-pending'}"
+    >
+      <div class="grid grid-cols-[auto_1fr_auto] items-start gap-3">
+        <span
+          class="mt-px grid size-5 shrink-0 place-items-center rounded-md border transition-colors duration-300 ease-[var(--ease-out)] {allSitesGranted
+            ? allPermissionsGranted ? 'permission-badge-complete' : 'permission-badge-granted'
+            : 'border-line/80 bg-surface/40 text-transparent'}"
+        >
+          {#if allSitesGranted}
+            <Check class="size-3" weight="bold" />
+          {/if}
+        </span>
         <div class="min-w-0 space-y-1">
-          <p class="text-[12.5px] font-medium text-foreground">{t.allSites}</p>
-          <p class="text-muted-foreground text-[11.5px] leading-relaxed">{t.allSitesDescription}</p>
+          <p class="flex items-center gap-1.5 text-[12.5px] font-medium transition-colors duration-300 ease-[var(--ease-out)] {allSitesGranted ? 'text-muted-foreground' : 'text-foreground'}">
+            <GlobeSimple class="text-muted-foreground size-3.5 shrink-0" weight="bold" />
+            <span>{t.allSites}</span>
+          </p>
+          <p class="text-muted-foreground text-[11px] leading-relaxed">{t.allSitesDescription}</p>
         </div>
-        <span class="shrink-0 rounded-full border border-line/70 px-2 py-0.5 text-[10.5px] text-muted-foreground">{statusLabel(accessState.allSites)}</span>
+        <div class="flex shrink-0 items-center pt-0.5">
+          {#if !allSitesGranted}
+            <Button size="sm" variant="default" disabled={busy !== ''} onclick={grantAllSites}>
+              {busy === 'all-sites' ? '…' : t.allowAllSites}
+            </Button>
+          {/if}
+        </div>
       </div>
-      <Button class="mt-3 h-8 w-full text-[12px]" variant="outline" disabled={busy !== '' || accessState.allSites} onclick={grantAllSites}>{busy === 'all-sites' ? '…' : t.allowAllSites}</Button>
-    </div>
-  </div>
+    </li>
+  </ol>
 
   {#if error}
-    <p class="text-danger text-xs" role="alert">{error}</p>
-  {/if}
-
-  {#if variant === 'onboarding'}
-    <Button class="h-9 w-full text-[12.5px]" disabled={busy !== '' || !accessState.ready} onclick={complete}>{busy === 'done' ? '…' : t.done}</Button>
+    <p class="text-danger mt-1 text-xs" role="alert">{error}</p>
   {/if}
 </section>

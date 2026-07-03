@@ -26,8 +26,10 @@
     setLocale: (locale: Locale) => void;
     openShortcutSettings: () => void;
     refreshProviders: () => void | Promise<void>;
-    windowId?: number;
+    refreshBrowserControl: () => void | Promise<void>;
     onboarding?: boolean;
+    spotlight?: boolean;
+    providerSpotlight?: boolean;
     notify?: Notify;
     notices?: ToastNotice[];
   }
@@ -41,8 +43,10 @@
     setLocale,
     openShortcutSettings,
     refreshProviders,
-    windowId,
+    refreshBrowserControl,
     onboarding = false,
+    spotlight = false,
+    providerSpotlight = false,
     notify,
     notices = [],
   }: Props = $props();
@@ -54,6 +58,10 @@
   let activeTabIndex = $derived(activeTab === 'preferences' ? 0 : 1);
   let themeIndex = $derived(theme === 'system' ? 0 : theme === 'light' ? 1 : 2);
   let localeIndex = $derived(locale === 'zh' ? 0 : 1);
+  let browserSpotlightActive = $derived(spotlight && activeTab === 'preferences');
+  let providerSpotlightActive = $derived(providerSpotlight && activeTab === 'providers');
+  let activeSpotlight = $derived(browserSpotlightActive || providerSpotlightActive);
+  let dimClass = $derived(activeSpotlight ? 'opacity-30 pointer-events-none blur-[3px] transition-[opacity,filter] duration-300 ease-[var(--ease-out)]' : '');
 
   const SEGMENT_BASE =
     'relative z-10 flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-[12px] transition-[color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]';
@@ -76,6 +84,7 @@
   $effect(() => {
     activeTab;
     onboarding;
+    activeSpotlight;
     if (open) void measureContent();
   });
 
@@ -104,14 +113,14 @@
 </script>
 
 <Dialog.Root bind:open>
-  <Dialog.Content class="flex max-h-[min(86vh,640px)] w-[min(92vw,28rem)] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[28rem]">
+  <Dialog.Content data-spotlight={activeSpotlight ? '' : null} class="flex max-h-[min(86vh,640px)] w-[min(92vw,28rem)] flex-col gap-0 overflow-hidden rounded-2xl p-0 ring-2 sm:max-w-[28rem]">
     <ToastStack items={notices} placement="dialog" />
-    <header class="flex items-center justify-between px-5 pb-3 pt-4">
+    <header class="{dimClass} flex items-center justify-between px-5 pb-3 pt-4">
       <Dialog.Title class="text-[15px] font-semibold tracking-tight text-foreground">{t.app.settings}</Dialog.Title>
       <Dialog.Description class="sr-only">{t.app.settings}</Dialog.Description>
     </header>
 
-    <nav aria-label={t.app.settings} class="px-5 pb-2">
+    <nav aria-label={t.app.settings} class="{dimClass} px-5 pb-2">
       <div role="tablist" class="bg-surface-2 relative grid w-full grid-cols-2 gap-1 rounded-lg p-1">
         <span aria-hidden="true" class="bg-surface pointer-events-none absolute bottom-1 left-1 top-1 rounded-md shadow-[0_1px_2px_oklch(0_0_0_/_0.06)] transition-transform duration-200 ease-[var(--ease-out)]" style={pillStyle(activeTabIndex, 2, 0.25, 0.25)}></span>
         <button type="button" role="tab" aria-selected={activeTab === 'preferences'} class={tabClass(activeTab === 'preferences')} onclick={() => (activeTab = 'preferences')}>
@@ -132,7 +141,7 @@
       <div bind:this={contentElement} class="max-h-[calc(min(86vh,640px)_-_6.5rem)] overflow-y-auto overscroll-contain px-5 [scrollbar-gutter:stable]">
       {#if activeTab === 'preferences'}
         <div class="flex flex-col gap-6 pb-5 pt-3">
-          <section class="fx-enter space-y-2" style="--fx-index: 0">
+          <section class="fx-enter space-y-2 {dimClass}" style="--fx-index: 0">
             <p class="text-muted-foreground text-[11px] font-medium tracking-[0.04em] uppercase">{t.app.theme}</p>
             <div class="bg-surface-2 relative grid grid-cols-3 rounded-lg p-0.5">
               <span aria-hidden="true" class="bg-surface pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 rounded-md shadow-[0_1px_2px_oklch(0_0_0_/_0.06)] transition-transform duration-200 ease-[var(--ease-out)]" style={pillStyle(themeIndex, 3, 0, 0.125)}></span>
@@ -142,7 +151,7 @@
             </div>
           </section>
 
-          <section class="fx-enter space-y-2" style="--fx-index: 1">
+          <section class="fx-enter space-y-2 {dimClass}" style="--fx-index: 1">
             <p class="text-muted-foreground text-[11px] font-medium tracking-[0.04em] uppercase">{t.locale.label}</p>
             <div class="bg-surface-2 relative grid grid-cols-2 rounded-lg p-0.5">
               <span aria-hidden="true" class="bg-surface pointer-events-none absolute bottom-0.5 left-0.5 top-0.5 rounded-md shadow-[0_1px_2px_oklch(0_0_0_/_0.06)] transition-transform duration-200 ease-[var(--ease-out)]" style={pillStyle(localeIndex, 2, 0, 0.125)}></span>
@@ -151,11 +160,7 @@
             </div>
           </section>
 
-          <section class="fx-enter space-y-2" style="--fx-index: 2">
-            <BrowserAccessPanel {locale} {windowId} {notify} />
-          </section>
-
-          <section class="fx-enter space-y-2" style="--fx-index: 3">
+          <section class="fx-enter space-y-2 {dimClass}" style="--fx-index: 2">
             <p class="text-muted-foreground text-[11px] font-medium tracking-[0.04em] uppercase">{t.app.shortcuts}</p>
             <button
               type="button"
@@ -172,10 +177,14 @@
               </span>
             </button>
           </section>
+
+          <section class="fx-enter space-y-2" style="--fx-index: 3">
+            <BrowserAccessPanel {locale} spotlight={browserSpotlightActive} {notify} onChanged={refreshBrowserControl} onDone={refreshBrowserControl} />
+          </section>
         </div>
       {:else}
         <div class="fx-enter pb-5 pt-3">
-          <ProviderSettings {locale} variant={onboarding ? 'onboarding' : 'panel'} onChanged={refreshProviders} {notify} />
+          <ProviderSettings {locale} variant={onboarding ? 'onboarding' : 'panel'} spotlight={providerSpotlightActive} onChanged={refreshProviders} {notify} />
         </div>
       {/if}
       </div>

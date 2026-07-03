@@ -3,12 +3,11 @@
   import { browser } from 'wxt/browser';
   import { projectAgentEvents } from '$lib/agent-event-projection.ts';
   import { initializeDatabase, listSessions, readLatestSessionSnapshot, readSessionSnapshot, type SessionListItem, type SessionSnapshot } from '$lib/db.ts';
-  import { imagePreviewFromProjection, sidebarTaskViewFromProjection, sourcesFromProjection, timelineFromProjection, type SourceLink } from '$lib/sidepanel-view.ts';
+  import { imagePreviewFromProjection, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup, sidebarTaskViewFromProjection, sourcesFromProjection, timelineFromProjection, type SettingsTab, type SourceLink } from '$lib/sidepanel-view.ts';
   import { getReasoningEffort, getSelectedModelId, listProvidersWithModels, setReasoningEffort, setSelectedModelId, type ProviderWithModels, type ReasoningEffort } from '$lib/provider-store.ts';
   import { detectLocale, localeManualStorageKey, localeStorageKey, messages, persistLocale, type Locale } from '$lib/sidepanel-i18n.ts';
   import FadersHorizontal from 'phosphor-svelte/lib/FadersHorizontal';
-  import Plus from 'phosphor-svelte/lib/Plus';
-  import BrowserAccessPanel from './BrowserAccessPanel.svelte';
+  import Sparkle from 'phosphor-svelte/lib/Sparkle';
   import { readBrowserControlState, type BrowserControlState } from './browser-access.ts';
   import SettingsDialog from './SettingsDialog.svelte';
   import SessionHistory from './SessionHistory.svelte';
@@ -38,9 +37,10 @@
   let theme = $state<Theme>(readInitialTheme());
   let locale = $state<Locale>(detectRuntimeLocale());
   let settingsOpen = $state(false);
-  let settingsTab = $state<'preferences' | 'providers'>('preferences');
+  let settingsTab = $state<SettingsTab>('preferences');
   let sidepanelWindowId = $state<number | undefined>(undefined);
   let promptedForMissingModel = $state(false);
+  let promptedForBrowserControl = $state(false);
   let settingsToasts = $state<ToastNotice[]>([]);
   let nextToastId = 1;
 
@@ -65,7 +65,9 @@
   const selectedModelLabel = $derived(selectedModel ? (selectedModel.model.displayName ?? selectedModel.model.name) : t.app.noModelSelected);
   const composerDisabled = $derived(!databaseReady);
   const missingModel = $derived(!hasAnyModel || !selectedModel);
-  const showBrowserControlOnboarding = $derived(databaseReady && providersLoaded && browserControlLoaded && hasAnyModel && browserControlState?.ready !== true);
+  const missingBrowserControl = $derived(databaseReady && providersLoaded && browserControlLoaded && browserControlState?.ready !== true);
+  const providerSetupSpotlight = $derived(databaseReady && providersLoaded && browserControlLoaded && !missingBrowserControl && !hasAnyModel);
+  const setupMissing = $derived(missingModel || missingBrowserControl);
 
   $effect(() => {
     applyTheme(theme);
@@ -76,12 +78,25 @@
   });
 
   $effect(() => {
-    if (!databaseReady || !providersLoaded || showBrowserControlOnboarding) return;
-    if (hasAnyModel) {
-      promptedForMissingModel = false;
+    if (!databaseReady || !providersLoaded || !browserControlLoaded) return;
+    if (setupMissing) return;
+    promptedForBrowserControl = false;
+    promptedForMissingModel = false;
+  });
+
+  $effect(() => {
+    if (!databaseReady || !providersLoaded || !browserControlLoaded) return;
+    if (shouldAdvanceToProviderSetup({ settingsOpen, promptedForBrowserControl, missingBrowserControl, hasAnyModel, promptedForMissingModel })) {
+      openSettings('providers');
+      promptedForMissingModel = true;
       return;
     }
-    if (!promptedForMissingModel) {
+    if (settingsOpen) return;
+    if (missingBrowserControl) {
+      if (!promptedForBrowserControl) openSettings('preferences');
+      return;
+    }
+    if (!hasAnyModel && !promptedForMissingModel) {
       openSettings('providers');
       promptedForMissingModel = true;
     }
@@ -158,7 +173,6 @@
       selectedModelId = selected && selectableModels.some((model) => model.id === selected) ? selected : selectableModels[0]?.id ?? null;
       reasoningEffort = effort;
       providersLoaded = true;
-      if (selectableModels.length > 0 && browserControlState?.ready !== true) settingsOpen = false;
     } catch (error) {
       databaseError = describe(error);
     }
@@ -231,14 +245,6 @@
     }
   }
 
-  async function handleBrowserControlChanged(state: BrowserControlState) {
-    browserControlState = state;
-  }
-
-  async function handleBrowserControlDone() {
-    await refreshBrowserControl();
-  }
-
   async function handleStop() {
     taskError = '';
     try {
@@ -304,9 +310,10 @@
     const stored = await browser.storage.local.get([localeStorageKey, localeManualStorageKey]);
     locale = detectRuntimeLocale(stored[localeStorageKey], stored[localeManualStorageKey]);
   }
-  function openSettings(tab: 'preferences' | 'providers' = 'preferences') {
+  function openSettings(tab: SettingsTab = 'preferences') {
     settingsTab = tab;
     settingsOpen = true;
+    if (settingsTabStartsBrowserControlGuide(tab, missingBrowserControl)) promptedForBrowserControl = true;
   }
 
   function sendStartTask(message: unknown) {
@@ -352,37 +359,28 @@
 
   {#if !databaseReady}
     <div class="flex-1 p-6 pt-16 text-xs text-muted-foreground">{t.app.loadingDatabase}</div>
-  {:else if showBrowserControlOnboarding}
-    <section class="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-14">
-      <BrowserAccessPanel
-        {locale}
-        windowId={sidepanelWindowId}
-        variant="onboarding"
-        notify={notifySettings}
-        onChanged={handleBrowserControlChanged}
-        onDone={handleBrowserControlDone}
-      />
+  {:else if setupMissing}
+    <section class="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-7 overflow-hidden px-6 pt-12 text-center">
+      <span aria-hidden="true" class="taber-logo-image taber-logo-watermark fx-enter pointer-events-none block" style="--fx-index:0"></span>
+      <div class="fx-enter space-y-1.5" style="--fx-index:1">
+        <h2 class="text-[15px] font-semibold tracking-tight text-foreground">{t.app.welcomeHeading}</h2>
+      </div>
+      <button
+        type="button"
+        class="fx-enter inline-flex items-center gap-1.5 rounded-full bg-primary px-4 py-2.5 text-[12.5px] font-medium text-primary-foreground shadow-[0_1px_3px_oklch(0_0_0_/_0.08)] transition-[background-color,box-shadow,transform] duration-150 ease-[var(--ease-out)] hover:bg-primary/90 active:scale-[0.97]"
+        style="--fx-index:2"
+        onclick={() => openSettings(missingBrowserControl ? 'preferences' : 'providers')}
+      >
+        <Sparkle class="size-3.5" weight="fill" />
+        {t.app.getStarted}
+      </button>
     </section>
   {:else}
-    {#if hasAnyModel}
-      <section class="min-h-0 flex-1 overflow-hidden pt-12">
-        <Timeline {locale} entries={timelineEntries} />
-      </section>
+    <section class="min-h-0 flex-1 overflow-hidden pt-12">
+      <Timeline {locale} entries={timelineEntries} />
+    </section>
 
-      <SourcesBar {locale} {sources} {imagePreview} onOpenSource={openSource} />
-    {:else}
-      <section class="fx-enter flex min-h-0 flex-1 flex-col items-center justify-center gap-5 overflow-hidden px-6 pt-12 text-center">
-        <span aria-hidden="true" class="taber-logo-image taber-logo-watermark pointer-events-none block"></span>
-        <button
-          type="button"
-          class="bg-primary text-primary-foreground hover:bg-primary/90 inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-medium shadow-[0_1px_2px_oklch(0_0_0_/_0.06)] transition-[background-color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97]"
-          onclick={() => openSettings('providers')}
-        >
-          <Plus class="size-3.5" weight="bold" />
-          {t.provider.addFirstProvider}
-        </button>
-      </section>
-    {/if}
+    <SourcesBar {locale} {sources} {imagePreview} onOpenSource={openSource} />
 
     <section class="shrink-0 px-3 pb-3 pt-2">
       <Composer
@@ -421,8 +419,10 @@
   setLocale={setLocale}
   openShortcutSettings={openShortcutSettings}
   refreshProviders={refreshProviders}
-  windowId={sidepanelWindowId}
+  refreshBrowserControl={refreshBrowserControl}
   onboarding={!hasAnyModel}
+  spotlight={missingBrowserControl}
+  providerSpotlight={providerSetupSpotlight}
   notify={notifySettings}
   notices={settingsToasts}
 />

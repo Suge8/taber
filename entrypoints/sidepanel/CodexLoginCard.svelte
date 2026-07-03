@@ -52,12 +52,7 @@
       notify?.({ tone: 'success', text: t.codexSaved });
     } catch (loginError) {
       const result = describeLoginError(loginError);
-      if (result.cancelled) {
-        notify?.({ tone: 'info', text: result.message });
-      } else {
-        error = result.message;
-        notify?.({ tone: 'error', text: result.message });
-      }
+      notify?.({ tone: result.cancelled ? 'info' : 'error', text: result.message });
     } finally {
       busy = null;
     }
@@ -109,6 +104,7 @@
     const message = describe(value);
     if (message === 'OAuth tab was closed before completing login.' || message === 'OAuth login was cancelled.') return { cancelled: true, message: t.codexLoginCancelled };
     if (message === 'OAuth login timed out.') return { cancelled: false, message: t.codexLoginTimedOut };
+    if (/user interaction required|interaction required|requires user interaction/i.test(message)) return { cancelled: false, message: t.codexLoginInteractionRequired };
     return { cancelled: false, message };
   }
 
