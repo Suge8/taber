@@ -269,7 +269,7 @@ async function readError(response: Response) {
 
 function shouldUseLocalhostFallback(error: unknown) {
   const message = describe(error);
-  if (/abort|cancel|closed|denied|approve|state mismatch|missing authorization code/i.test(message)) return false;
+  if (/\baborted\b|cancel|closed|denied|approve|state mismatch|missing authorization code/i.test(message)) return false;
   return /redirect|could not be loaded|authorization page|oauth login failed|invalid_request|not supported|not allowed|interaction required|requires user interaction|failed/i.test(message);
 }
 

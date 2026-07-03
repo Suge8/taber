@@ -32,6 +32,7 @@ await testExchangeCodeForTokens();
 await testExchangeOAuthCodeForTokens();
 await testLoginUsesIdentityWebAuthFlow();
 await testIdentityFailureFallsBackToLocalhostCapture();
+await testIdentityInteractionRequiredFallsBackToLocalhostCapture();
 await testIdentityUnsupportedPageFallsBackToLocalhostCapture();
 await testIdentityCancelDoesNotFallback();
 await testWaitForIdentityRedirect();
@@ -212,6 +213,35 @@ async function testIdentityFailureFallsBackToLocalhostCapture() {
   assert.equal(params.get('code'), 'local-code');
   assert.equal(params.get('redirect_uri'), CODEX_OAUTH_REDIRECT_URI);
   assert.equal(tokens.refreshToken, 'rt_fallback');
+  assert.deepEqual(fakeTabs.removedIds, [7]);
+}
+
+async function testIdentityInteractionRequiredFallsBackToLocalhostCapture() {
+  let body = '';
+  const identity: CodexOAuthIdentity = {
+    getRedirectURL: () => 'https://extension.chromiumapp.org/auth/callback',
+    launchWebAuthFlow: async () => { throw new Error('User interaction required. Try setting `abortOnLoadForNonInteractive` and `timeoutMsForNonInteractive` if multiple navigations are required.'); },
+  };
+  const fakeTabs = createFakeTabs();
+  const login = loginOpenAICodex({
+    identity,
+    tabs: fakeTabs.tabs,
+    webNavigation: fakeTabs.webNavigation,
+    fetch: async (_input, init) => {
+      body = String(init?.body);
+      return jsonResponse({ access_token: jwt({ exp: 2000 }), refresh_token: 'rt_interaction_fallback' });
+    },
+  });
+
+  const authUrl = await fakeTabs.created;
+  const state = new URL(authUrl).searchParams.get('state');
+  fakeTabs.beforeNavigate?.({ tabId: 7, frameId: 0, url: `http://localhost:1455/auth/callback?code=local-code&state=${state}` });
+
+  const tokens = await login;
+  const params = new URLSearchParams(body);
+  assert.equal(params.get('code'), 'local-code');
+  assert.equal(params.get('redirect_uri'), CODEX_OAUTH_REDIRECT_URI);
+  assert.equal(tokens.refreshToken, 'rt_interaction_fallback');
   assert.deepEqual(fakeTabs.removedIds, [7]);
 }
 
