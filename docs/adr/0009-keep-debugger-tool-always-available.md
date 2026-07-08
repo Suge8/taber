@@ -13,6 +13,6 @@ Taber 不再默认保持 `debugger` 工具可用。`debugger` 权限会触发高
 
 - 使用 `TABER_ENABLE_DEBUGGER=1` 开启。
 - manifest 包含 `debugger`。
-- Agent 可使用 `debugger` 工具和 CDP/native fallback。
+- Agent 可使用 `debugger` 工具读取 console/network/failed requests、AX snapshot、主世界状态，并使用 CDP/native fallback。
 
 这样保留排障能力，但不把高权限调试混入上架版默认体验。

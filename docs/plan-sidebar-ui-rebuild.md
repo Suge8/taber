@@ -67,7 +67,7 @@
 - **验证**：`pnpm build:chrome` 通过；sidepanel 能加载并渲染 Tailwind 样式。
 
 ### 1. Provider/Model store（`lib/provider-store.ts`）
-- 纯 async 函数集合，不引状态库：`listProviders`、`listModels`、`saveProvider`、`updateProvider`、`deleteProvider`（级联删 models + selected 回退）、`saveModel`、`deleteModel`、`getSelectedModelId`、`setSelectedModelId`、`testConnection(baseURL, apiKey)`。
+- 读侧保留在 `provider-store.ts`：`listProviders`、`listModels`、`listProvidersWithModels`、`getSelectedModelId`、`setSelectedModelId`、`testConnection(baseURL, apiKey)`；写侧统一走 `provider-config-flow.ts` 的 connection 流程。
 - `testConnection`：sidepanel 内 `fetch(baseURL + /models)`（或最小请求），返回 ok/错误，不碰 AgentHost。
 - 严格保持 offscreen 读取契约：写入的 provider/model/settings 形状不变。
 - **验证**：单测覆盖级联删除、selected 回退、保存后 `selectedModelId` 可被 offscreen 读取路径解析。复用现有 `test:unit` 风格脚本。

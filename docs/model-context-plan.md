@@ -177,7 +177,7 @@ url: ...
 
 [Tool evidence]
 - getDocument: ...
-- browserRepl.observe: saw "使用 Linux Do 登录" button. Element indexes are historical; re-observe before interacting.
+- browserRepl.observe: saw "使用 Linux Do 登录" button. Element indexes are scoped to one `browserRepl` call; use selectors for later actions.
 
 assistant:
 ...
@@ -186,7 +186,7 @@ assistant:
 Add instruction-level behavior:
 
 ```txt
-Before interacting with a page based on prior context, re-observe or query the current page state.
+Use one fresh page snapshot, then one batched action/form fill and one verification. Observe/query again only after navigation, a failed action, or unexpected page change; never reuse element indexes across browserRepl calls.
 ```
 
 ### Tool evidence digest rules
@@ -235,7 +235,7 @@ Keep by helper:
 - `waitFor`: observed text/state
 - `browserjs/sandbox`: stringified result, truncated
 
-Always mark element indexes/stable IDs as historical. The agent must re-observe before interaction.
+Mark element indexes as scoped to the single `browserRepl` call that produced them. Later interactions should use durable selectors or take a fresh snapshot only when navigation, failure, or unexpected page changes make the previous evidence stale.
 
 #### `debugger`
 
@@ -637,8 +637,8 @@ Files:
 
 Changes:
 
-- require/default `contextWindowTokens` on `saveModel()`
-- support updating model context window
+- require/default `contextWindowTokens` in the provider connection flow
+- support updating model context window through connection updates
 - preserve selected model behavior
 - add catalog cache read/write helpers if needed
 
