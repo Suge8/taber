@@ -1,4 +1,4 @@
-import type { BrowserReplPageCommand } from './browser-repl';
+import type { BrowserReplPageCommand } from './browser-repl-command.ts';
 import type { ChromeApiAction } from './chrome-api-broker';
 
 type CallChromeApi = (action: ChromeApiAction, args: unknown[]) => Promise<unknown>;
@@ -10,7 +10,7 @@ type Point = { x: number; y: number };
 export function canUseCdpFallback(command: BrowserReplPageCommand, error: unknown) {
   if (command.helper !== 'click' && command.helper !== 'fill' && command.helper !== 'press') return false;
   const message = error instanceof Error ? error.message : String(error);
-  return !/disabled|gone|changed|not fillable/i.test(message);
+  return !/disabled|gone|changed|not fillable|no element|no visible|no focused|ambiguous|stale|latest browser snapshot|page changed/i.test(message);
 }
 
 export async function executeBrowserReplCdpFallback(options: {

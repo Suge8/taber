@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { cloneBoundaryError } from './browser-repl-code.ts';
 import type { BrowserReplHelper, BrowserReplSandboxRun } from './browser-repl';
 
 type SandboxMessage =
@@ -64,8 +65,16 @@ async function answerHelper(target: Window | null, helpers: Record<string, Brows
 
   try {
     const value = await helper(...message.args);
-    target.postMessage({ type: 'taber.sandbox.helperResult', runId: message.runId, helperId: message.helperId, ok: true, value }, '*');
+    postHelperResult(target, message, { ok: true, value });
   } catch (error) {
-    target.postMessage({ type: 'taber.sandbox.helperResult', runId: message.runId, helperId: message.helperId, ok: false, error: error instanceof Error ? error.message : String(error) }, '*');
+    postHelperResult(target, message, { ok: false, error: cloneBoundaryError(`browserRepl helper ${message.name} result`, error) });
+  }
+}
+
+function postHelperResult(target: Window, message: Extract<SandboxMessage, { type: 'taber.sandbox.helper' }>, result: { ok: true; value: unknown } | { ok: false; error: string }) {
+  try {
+    target.postMessage({ type: 'taber.sandbox.helperResult', runId: message.runId, helperId: message.helperId, ...result }, '*');
+  } catch (error) {
+    target.postMessage({ type: 'taber.sandbox.helperResult', runId: message.runId, helperId: message.helperId, ok: false, error: cloneBoundaryError(`browserRepl helper ${message.name} result`, error) }, '*');
   }
 }

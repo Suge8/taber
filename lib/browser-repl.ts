@@ -1,62 +1,66 @@
-export const browserReplRequestType = 'taber.browserRepl.request';
-export const DEFAULT_BROWSER_REPL_TIMEOUT_MS = 30_000;
-export const MAX_BROWSER_REPL_TIMEOUT_MS = 120_000;
+import { normalizeBrowserJsCode } from './browser-repl-code.ts';
+import {
+  DEFAULT_BROWSER_REPL_TIMEOUT_MS,
+  MAX_BROWSER_REPL_TIMEOUT_MS,
+  browserReplHelperTimeout,
+  browserReplPickUserElementOptions,
+  normalizeBrowserReplBatchActions,
+  normalizeBrowserReplObserveOptions,
+  normalizeBrowserReplScrollOptions,
+  normalizeBrowserReplWaitOptions,
+  parseBrowserReplInput,
+  readBrowserReplActionTarget,
+  readBrowserReplPressArgs,
+  readBrowserReplString,
+  rememberBrowserReplElementRefs,
+  type BrowserJsConsoleEntry,
+  type BrowserReplElementRef,
+  type BrowserReplHelper,
+  type BrowserReplInput,
+  type BrowserReplPageCommand,
+  type BrowserReplResult,
+  type BrowserReplSandboxRun,
+} from './browser-repl-command.ts';
+
+export {
+  DEFAULT_BROWSER_REPL_TIMEOUT_MS,
+  MAX_BROWSER_REPL_TIMEOUT_MS,
+  browserReplFallbackFor,
+  browserReplInputJsonSchema,
+  browserReplPageHelperNames,
+  browserReplRequestType,
+  browserReplToolHelperNames,
+  createBrowserReplInputJsonSchema,
+  parseBrowserReplInput,
+  type BrowserJsConsoleEntry,
+  type BrowserReplElementRef,
+  type BrowserReplFallback,
+  type BrowserReplHelper,
+  type BrowserReplInput,
+  type BrowserReplPageCommand,
+  type BrowserReplPageHelperName,
+  type BrowserReplResult,
+  type BrowserReplSandboxRun,
+} from './browser-repl-command.ts';
 
 const SHORT_PAGE_TIMEOUT_MS = 5_000;
 const WAIT_FOR_TIMEOUT_MS = 8_000;
 
-export type BrowserReplInput = {
-  code: string;
-  tabId?: number;
-  timeoutMs?: number;
-};
+const browserJsPageResultType = 'taber.browserjs.result';
+const MAX_BROWSERJS_CONSOLE_ENTRIES = 20;
 
-export type BrowserReplResult = { value: unknown };
-
-export type BrowserReplElementRef = {
-  stableId: string;
-  selector: string;
-  tagName: string;
-  name: string;
-};
-
-export type BrowserReplPageCommand = {
-  helper: 'observe' | 'query' | 'click' | 'fill' | 'press' | 'scroll' | 'waitFor' | 'browserjs' | 'pickElement';
-  args: unknown[];
-  cancelKey?: string;
-  timeoutMs?: number;
-};
-
-export type BrowserReplHelper = (...args: unknown[]) => Promise<unknown>;
-export type BrowserReplFallback = 'browserjsCdp' | 'pressCdp' | 'scripting';
-
-export type BrowserReplSandboxRun = {
-  code: string;
-  helpers: Record<string, BrowserReplHelper>;
-  timeoutMs: number;
-  abortSignal?: AbortSignal;
-};
+type BrowserJsPageResult = { type: typeof browserJsPageResultType; value: unknown; console: BrowserJsConsoleEntry[] };
 
 type Scheduler = {
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(timeoutId: unknown): void;
 };
 
-export const browserReplInputJsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['code'],
-  properties: {
-    code: { type: 'string', description: 'JavaScript REPL code. Use return to send a serializable result.' },
-    tabId: { type: 'integer', minimum: 1, description: 'Target tab id. Defaults to the active tab.' },
-    timeoutMs: { type: 'integer', minimum: 1, maximum: MAX_BROWSER_REPL_TIMEOUT_MS },
-  },
-} as const;
-
 export function createBrowserReplController(options: {
   getCurrentTabId(): Promise<number>;
   executePageCommand(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal): Promise<unknown>;
   runSandbox(run: BrowserReplSandboxRun): Promise<unknown>;
+  navigate?(input: unknown, abortSignal?: AbortSignal): Promise<unknown>;
   browserJsEnabled?: boolean;
   scheduler?: Scheduler;
 }) {
@@ -67,8 +71,10 @@ export function createBrowserReplController(options: {
 
   async function run(value: unknown, abortSignal?: AbortSignal): Promise<BrowserReplResult> {
     const input = parseBrowserReplInput(value);
-    const tabId = input.tabId ?? (await options.getCurrentTabId());
+    let pageTabId = input.tabId ?? (await options.getCurrentTabId());
     const refs = new Map<number, BrowserReplElementRef>();
+    let nextRefIndex = 1;
+    const browserJsConsole: BrowserJsConsoleEntry[] = [];
 
     const callPage = (command: BrowserReplPageCommand, pageTimeoutMs: number) => {
       const pageCommand = { ...command, cancelKey: crypto.randomUUID(), timeoutMs: pageTimeoutMs };
@@ -77,7 +83,7 @@ export function createBrowserReplController(options: {
       if (abortSignal?.aborted) relayAbort();
       else abortSignal?.addEventListener('abort', relayAbort, { once: true });
       return withTimeout(
-        () => options.executePageCommand(tabId, pageCommand, pageAbortController.signal),
+        () => options.executePageCommand(pageTabId, pageCommand, pageAbortController.signal),
         pageTimeoutMs,
         `${command.helper} timed out`,
         scheduler,
@@ -86,77 +92,81 @@ export function createBrowserReplController(options: {
     };
 
     const helpers: Record<string, BrowserReplHelper> = {
-      observe: async (observeOptions) => remember(await callPage({ helper: 'observe', args: [observeOptions] }, helperTimeout(observeOptions, SHORT_PAGE_TIMEOUT_MS)), refs),
-      query: async (selector, queryOptions) => remember(await callPage({ helper: 'query', args: [readString(selector, 'selector'), queryOptions] }, helperTimeout(queryOptions, SHORT_PAGE_TIMEOUT_MS)), refs),
-      click: async (index) => callPage({ helper: 'click', args: [requireRef(refs, index)] }, SHORT_PAGE_TIMEOUT_MS),
-      fill: async (index, text) => callPage({ helper: 'fill', args: [requireRef(refs, index), readString(text, 'text')] }, SHORT_PAGE_TIMEOUT_MS),
-      press: async (targetOrKey, key) => callPage({ helper: 'press', args: readPressArgs(refs, targetOrKey, key) }, SHORT_PAGE_TIMEOUT_MS),
-      scroll: async (scrollOptions) => callPage({ helper: 'scroll', args: [normalizeScrollOptions(scrollOptions)] }, SHORT_PAGE_TIMEOUT_MS),
-      waitFor: async (waitOptions) => callPage({ helper: 'waitFor', args: [waitOptions] }, helperTimeout(waitOptions, WAIT_FOR_TIMEOUT_MS)),
-      sandbox: async (code, args) => runInlineSandbox(readString(code, 'code'), args),
-      pickElement: async (index) => callPage({ helper: 'pickElement', args: [requireRef(refs, index)] }, SHORT_PAGE_TIMEOUT_MS),
+      readVisibleText: async (readOptions) => callPage({ helper: 'readVisibleText', args: [readOptions] }, browserReplHelperTimeout(readOptions, SHORT_PAGE_TIMEOUT_MS)),
+      readLinksAndButtons: async (readOptions) => callPage({ helper: 'readLinksAndButtons', args: [readOptions] }, browserReplHelperTimeout(readOptions, SHORT_PAGE_TIMEOUT_MS)),
+      listInteractiveElements: async (listOptions) => callPage({ helper: 'listInteractiveElements', args: [listOptions] }, browserReplHelperTimeout(listOptions, SHORT_PAGE_TIMEOUT_MS)),
+      queryText: async (text, queryOptions) => callPage({ helper: 'queryText', args: [readBrowserReplString(text, 'text'), queryOptions] }, browserReplHelperTimeout(queryOptions, SHORT_PAGE_TIMEOUT_MS)),
+      observe: async (observeOptions) => {
+        const options = normalizeBrowserReplObserveOptions(observeOptions);
+        return rememberBrowserReplElementRefs(await callPage({ helper: 'observe', args: [options] }, browserReplHelperTimeout(options, SHORT_PAGE_TIMEOUT_MS)), refs, () => nextRefIndex++);
+      },
+      query: async (selector, queryOptions) => rememberBrowserReplElementRefs(await callPage({ helper: 'query', args: [readBrowserReplString(selector, 'selector'), queryOptions] }, browserReplHelperTimeout(queryOptions, SHORT_PAGE_TIMEOUT_MS)), refs, () => nextRefIndex++),
+      click: async (target) => callPage({ helper: 'click', args: [readBrowserReplActionTarget(refs, target, 'target')] }, SHORT_PAGE_TIMEOUT_MS),
+      fill: async (target, text) => callPage({ helper: 'fill', args: [readBrowserReplActionTarget(refs, target, 'target'), readBrowserReplString(text, 'text')] }, SHORT_PAGE_TIMEOUT_MS),
+      press: async (targetOrKey, key) => callPage({ helper: 'press', args: readBrowserReplPressArgs(refs, targetOrKey, key) }, SHORT_PAGE_TIMEOUT_MS),
+      scroll: async (scrollOptions) => callPage({ helper: 'scroll', args: [normalizeBrowserReplScrollOptions(scrollOptions)] }, SHORT_PAGE_TIMEOUT_MS),
+      waitFor: async (waitOptions) => {
+        const options = normalizeBrowserReplWaitOptions(waitOptions);
+        return callPage({ helper: 'waitFor', args: [options] }, browserReplHelperTimeout(options, WAIT_FOR_TIMEOUT_MS));
+      },
+      batch: async (actions, batchOptions) => callPage({ helper: 'batch', args: [normalizeBrowserReplBatchActions(actions, refs), batchOptions] }, browserReplHelperTimeout(batchOptions, DEFAULT_BROWSER_REPL_TIMEOUT_MS)),
+      fillForm: async (formOptions) => callPage({ helper: 'fillForm', args: [formOptions] }, browserReplHelperTimeout(formOptions, DEFAULT_BROWSER_REPL_TIMEOUT_MS)),
+      sandbox: async (code, args) => runInlineSandbox(readBrowserReplString(code, 'code'), args),
+      pickElement: async (target) => callPage({ helper: 'pickElement', args: [readBrowserReplActionTarget(refs, target, 'target')] }, SHORT_PAGE_TIMEOUT_MS),
+      pickUserElement: async (messageOrOptions) => {
+        const pickerOptions = browserReplPickUserElementOptions(messageOrOptions);
+        return callPage({ helper: 'pickUserElement', args: [pickerOptions] }, browserReplHelperTimeout(pickerOptions, DEFAULT_BROWSER_REPL_TIMEOUT_MS));
+      },
     };
-    if (options.browserJsEnabled !== false) helpers.browserjs = async (code, args) => callPage({ helper: 'browserjs', args: [readString(code, 'code'), args] }, helperTimeout(args, DEFAULT_BROWSER_REPL_TIMEOUT_MS));
+    if (options.navigate) {
+      const navigate = options.navigate;
+      helpers.navigate = async (navigateInput) => {
+        const result = await navigate(navigateInput, abortSignal);
+        pageTabId = navigateResultTabId(result) ?? pageTabId;
+        return result;
+      };
+    }
+    if (options.browserJsEnabled !== false) helpers.browserjs = async (code, args) => {
+      const result = await callPage({ helper: 'browserjs', args: [normalizeBrowserJsCode(code), args] }, browserReplHelperTimeout(args, DEFAULT_BROWSER_REPL_TIMEOUT_MS));
+      if (!isBrowserJsPageResult(result)) return result;
+      appendBrowserJsConsole(browserJsConsole, result.console);
+      return result.value;
+    };
 
     const valueResult = await options.runSandbox({ code: input.code, helpers, timeoutMs: timeoutMs(input), abortSignal });
-    return { value: valueResult };
+    return browserJsConsole.length ? { value: valueResult, browserjs: { console: browserJsConsole } } : { value: valueResult };
   }
 
   return { run };
 }
 
-export function browserReplFallbackFor(command: BrowserReplPageCommand): BrowserReplFallback {
-  if (command.helper === 'browserjs') return 'browserjsCdp';
-  if (command.helper === 'press') return 'pressCdp';
-  return 'scripting';
+export function browserJsPageResult(value: unknown, consoleEntries: unknown): BrowserJsPageResult {
+  return { type: browserJsPageResultType, value, console: normalizeBrowserJsConsole(consoleEntries) };
 }
 
-export function parseBrowserReplInput(value: unknown): BrowserReplInput {
-  if (!isRecord(value)) throw new Error('browserRepl input must be an object');
-  const code = readString(value.code, 'code');
-  if (code.trim() === '') throw new Error('browserRepl.code is required');
+function isBrowserJsPageResult(value: unknown): value is BrowserJsPageResult {
+  return isRecord(value) && value.type === browserJsPageResultType && Array.isArray(value.console);
+}
 
-  const input: BrowserReplInput = { code };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  if ('timeoutMs' in value) input.timeoutMs = readPositiveInteger(value.timeoutMs, 'timeoutMs');
-  if (input.timeoutMs && input.timeoutMs > MAX_BROWSER_REPL_TIMEOUT_MS) {
-    throw new Error(`timeoutMs must be <= ${MAX_BROWSER_REPL_TIMEOUT_MS}`);
+function appendBrowserJsConsole(target: BrowserJsConsoleEntry[], entries: BrowserJsConsoleEntry[]) {
+  for (const entry of entries) {
+    target.push(entry);
+    if (target.length > MAX_BROWSERJS_CONSOLE_ENTRIES) target.shift();
   }
-  return input;
 }
 
-function remember(value: unknown, refs: Map<number, BrowserReplElementRef>) {
-  if (!isRecord(value) || !Array.isArray(value.elements)) return value;
-  refs.clear();
-  return {
-    ...value,
-    elements: value.elements.map((element) => {
-      if (!isRecord(element)) return element;
-      const index = Number(element.index);
-      if (Number.isInteger(index) && isElementRef(element.ref)) refs.set(index, element.ref);
-      const { ref: _ref, ...visibleElement } = element;
-      return visibleElement;
-    }),
-  };
+function normalizeBrowserJsConsole(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.map(readBrowserJsConsoleEntry).filter((entry) => entry !== undefined).slice(-MAX_BROWSERJS_CONSOLE_ENTRIES);
 }
 
-function requireRef(refs: Map<number, BrowserReplElementRef>, value: unknown) {
-  const index = readPositiveInteger(value, 'index');
-  const ref = refs.get(index);
-  if (!ref) throw new Error(`Unknown element index: ${index}. Call observe() or query() first.`);
-  return ref;
+function readBrowserJsConsoleEntry(value: unknown): BrowserJsConsoleEntry | undefined {
+  if (!isRecord(value) || !isBrowserJsConsoleLevel(value.level) || typeof value.text !== 'string') return undefined;
+  return { level: value.level, text: value.text.slice(0, 500) };
 }
 
-function readPressArgs(refs: Map<number, BrowserReplElementRef>, targetOrKey: unknown, key: unknown) {
-  if (key === undefined) return [undefined, readString(targetOrKey, 'key')];
-  return [requireRef(refs, targetOrKey), readString(key, 'key')];
-}
-
-function normalizeScrollOptions(value: unknown) {
-  if (value === undefined) return { y: 600 };
-  if (typeof value === 'number') return { y: value };
-  if (isRecord(value)) return value;
-  throw new Error('scroll options must be a number or object');
+function isBrowserJsConsoleLevel(value: unknown): value is BrowserJsConsoleEntry['level'] {
+  return value === 'log' || value === 'info' || value === 'warn' || value === 'error';
 }
 
 async function runInlineSandbox(code: string, args: unknown) {
@@ -164,15 +174,13 @@ async function runInlineSandbox(code: string, args: unknown) {
   return new AsyncFunction('args', `"use strict";\n${code}`)(args);
 }
 
-function helperTimeout(value: unknown, fallback: number) {
-  if (!isRecord(value) || !('timeoutMs' in value)) return fallback;
-  const timeout = readPositiveInteger(value.timeoutMs, 'timeoutMs');
-  if (timeout > MAX_BROWSER_REPL_TIMEOUT_MS) throw new Error(`timeoutMs must be <= ${MAX_BROWSER_REPL_TIMEOUT_MS}`);
-  return timeout;
-}
-
 function timeoutMs(input: BrowserReplInput) {
   return input.timeoutMs ?? DEFAULT_BROWSER_REPL_TIMEOUT_MS;
+}
+
+function navigateResultTabId(value: unknown) {
+  if (!isRecord(value) || !isRecord(value.tab)) return undefined;
+  return Number.isInteger(value.tab.id) && Number(value.tab.id) > 0 ? Number(value.tab.id) : undefined;
 }
 
 function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, message: string, scheduler: Scheduler, abortController: AbortController) {
@@ -186,20 +194,6 @@ function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, message: strin
     }, timeoutMs);
   });
   return Promise.race([promise, timeout]).finally(() => scheduler.clearTimeout(timeoutId));
-}
-
-function isElementRef(value: unknown): value is BrowserReplElementRef {
-  return isRecord(value) && typeof value.stableId === 'string' && typeof value.selector === 'string' && typeof value.tagName === 'string' && typeof value.name === 'string';
-}
-
-function readString(value: unknown, name: string) {
-  if (typeof value !== 'string') throw new Error(`${name} must be a string`);
-  return value;
-}
-
-function readPositiveInteger(value: unknown, name: string) {
-  if (Number.isInteger(value) && Number(value) > 0) return Number(value);
-  throw new Error(`${name} must be a positive integer`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
