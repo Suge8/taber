@@ -1,6 +1,6 @@
 packages:
   - .
 
-allowBuilds:
-  esbuild: true
-  spawn-sync: true
+onlyBuiltDependencies:
+  - esbuild
+  - spawn-sync
