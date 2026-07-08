@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import { selectOperableActiveTab } from '../lib/active-tab';
+import { effectiveTabUrl, isOperableTab, readRequiredWindowId, selectOperableActiveTab } from '../lib/active-tab';
 import { createAgentHostController } from '../lib/agent-host-controller';
 import { createChromeApiBroker, isTrustedChromeApiSender } from '../lib/chrome-api-broker';
 import { createDebuggerController, debuggerRequestType } from '../lib/debugger-tool';
@@ -7,14 +7,18 @@ import { extractImageFromPage, parseExtractImageInput, type ExtractImageInput } 
 import { extractDocumentFromPage, parseGetDocumentInput } from '../lib/get-document';
 import { createNavigateController, navigateRequestType } from '../lib/navigate';
 import { createOffscreenLifecycle } from '../lib/offscreen-lifecycle';
-import { runBrowserReplPageRuntime } from '../lib/browser-repl-page';
+import { installBrowserReplPageLocator, runBrowserReplPageRuntimeInjected } from '../lib/browser-repl-page';
+import { createBrowserReplPageIntrospection } from '../lib/browser-repl-page-introspection';
+import { runTaberPageOverlayCommand } from '../lib/browser-repl-visual-page';
 import { DEBUGGER_ENABLED } from '../lib/runtime-flags';
-import type { BrowserReplPageCommand } from '../lib/browser-repl';
+import type { BrowserReplPageCommand } from '../lib/browser-repl-command';
+import { readAgentLocale } from '../lib/agent-instructions';
 
 const offscreenLifecycle = createOffscreenLifecycle(browser.offscreen);
 const chromeApiBroker = createChromeApiBroker({
   ...(browser as unknown as Record<string, unknown>),
   userScripts: { execute: executeUserScript },
+  webNavigation: browser.webNavigation as never,
   debugger: DEBUGGER_ENABLED ? browser.debugger : disabledDebuggerApi(),
 } as never);
 
@@ -26,6 +30,8 @@ const agentHost = createAgentHostController({
   lifecycle: offscreenLifecycle,
   sendToHost: (message) => browser.runtime.sendMessage(message),
 });
+type BrowserTabLike = { id?: number; active?: boolean; index?: number; windowId?: number; title?: string; url?: string; pendingUrl?: string; favIconUrl?: string };
+
 const sidepanelPath = 'sidepanel.html';
 const toggleSidePanelCommand = 'toggle-side-panel';
 const sidepanelPorts = new Map<unknown, number | undefined>();
@@ -56,6 +62,9 @@ export default defineBackground({
       if (command === toggleSidePanelCommand) void toggleSidePanel(tab?.windowId);
     });
 
+    browser.tabs.onRemoved.addListener((tabId) => notifyTabRemoved(tabId));
+    browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => notifyTabUpdated(tabId, changeInfo, tab));
+
     browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const response = handleTaberMessage(message, sender);
       if (!response) return false;
@@ -80,7 +89,7 @@ function handleTaberMessage(message: unknown, sender?: { id?: string; url?: stri
   if (message.type === 'taber.browserRepl.isPageCommandCancelled') return Promise.resolve(typeof message.cancelKey === 'string' && cancelledPageCommands.has(message.cancelKey));
   if (message.type === 'taber.browserRepl.cancelPageCommand') return cancelBrowserReplPageCommand(message);
   if (message.type === 'taber.browserRepl.scriptingCommand') return executeBrowserReplScriptingCommand(message);
-  if (message.type === 'taber.chromeApi.request') return chromeApiBroker(message);
+  if (message.type === 'taber.chromeApi.request') return chromeApi(message);
   if (message.type === 'taber.getDocument.extractPage') return extractPageDocument(message);
   if (message.type === 'taber.extractImage.captureVisibleTab') return captureVisibleTab(message);
   if (message.type === 'taber.extractImage.extractPage') return extractPageImage(message);
@@ -93,7 +102,7 @@ function handleTaberMessage(message: unknown, sender?: { id?: string; url?: stri
   if (message.type === 'taber.background.agentIdle') return Promise.resolve(agentHost.markIdle());
   if (message.type === 'taber.background.closeIdleHost') return agentHost.closeNow();
   if (message.type === 'taber.background.openShortcutSettings') return browser.windows.create({ url: 'chrome://extensions/shortcuts', type: 'popup', width: 980, height: 760 });
-  if (message.type === 'taber.background.currentTab') return currentTab(readWindowId(message.windowId));
+  if (message.type === 'taber.background.currentTab') return currentTab(readWindowId(message.windowId), readTargetTabId(message.targetTabId));
   if (message.type === 'taber.background.startTask') return startTask(message);
   if (message.type === 'taber.background.stopTask') return agentHost.stopTask();
 
@@ -104,23 +113,24 @@ async function getCurrentTabId() {
   return requireTabId(await currentTab());
 }
 
-async function currentTab(windowId?: number) {
+async function currentTab(windowId?: number, targetTabId?: number): Promise<BrowserTabLike> {
+  if (targetTabId !== undefined) return requireTargetTab(targetTabId);
   const tabs = await queryActiveTabs(windowId);
   const tab = selectOperableActiveTab(tabs);
-  if (!tab) throw new Error('No operable active tab in the side panel window');
+  if (!tab) throw new Error('No operable http/https active tab in the side panel window');
   return tab;
 }
 
-async function queryTabs(query: Record<string, unknown>, windowId?: number) {
+async function queryTabs(query: Record<string, unknown>, windowId?: number): Promise<BrowserTabLike[]> {
   if (query.active === true && query.currentWindow === true && query.windowId === undefined) return queryActiveTabs(windowId);
-  return browser.tabs.query(query);
+  return browser.tabs.query(query) as Promise<BrowserTabLike[]>;
 }
 
-async function queryActiveTabs(windowId?: number) {
+async function queryActiveTabs(windowId?: number): Promise<BrowserTabLike[]> {
   const targetWindowId = windowId ?? latestSidepanelWindowId();
-  if (targetWindowId !== undefined) return browser.tabs.query({ active: true, windowId: targetWindowId });
+  if (targetWindowId !== undefined) return browser.tabs.query({ active: true, windowId: targetWindowId }) as Promise<BrowserTabLike[]>;
   const windows = await browser.windows.getAll({ populate: true, windowTypes: ['normal'] });
-  return windows.flatMap((window) => window.tabs ?? []).filter((tab) => tab.active);
+  return windows.flatMap((window) => (window.tabs ?? []) as BrowserTabLike[]).filter((tab) => tab.active);
 }
 
 function latestSidepanelWindowId() {
@@ -128,8 +138,13 @@ function latestSidepanelWindowId() {
 }
 
 function requireTabId(tab: { id?: number }) {
-  if (!tab.id) throw new Error('No operable active tab in the side panel window');
+  if (!tab.id) throw new Error('No operable http/https active tab in the side panel window');
   return tab.id;
+}
+
+function requireWindowId(tab: { windowId?: number }) {
+  if (!tab.windowId) throw new Error('No window for target tab');
+  return tab.windowId;
 }
 
 async function toggleSidePanel(windowId?: number) {
@@ -162,9 +177,24 @@ function hasSidePanelInWindow(windowId: number) {
   return [...sidepanelPorts.values()].includes(windowId);
 }
 
+function notifyTabRemoved(tabId: number) {
+  void browser.runtime.sendMessage({ type: 'taber.background.tabRemoved', tabId }).catch(() => undefined);
+}
+
+function notifyTabUpdated(tabId: number, changeInfo: { url?: string; status?: string }, tab: BrowserTabLike) {
+  if (!changeInfo.url && !tab.pendingUrl && !changeInfo.status) return;
+  void browser.runtime.sendMessage({ type: 'taber.background.tabUpdated', tab: tabContext({ ...tab, id: tab.id ?? tabId }) }).catch(() => undefined);
+}
+
 async function debug(message: Record<string, unknown>) {
   if (!debuggerController) throw new Error('debugger is only available in the Taber debug build');
   const input = isRecord(message.input) ? message.input : {};
+  const targetTabId = readTargetTabId(message.targetTabId);
+  if (targetTabId !== undefined) {
+    if (Number.isInteger(input.tabId) && Number(input.tabId) !== targetTabId) throw targetMismatchError(targetTabId, Number(input.tabId));
+    await activateTargetTab(targetTabId);
+    return debuggerController.run({ ...input, tabId: targetTabId });
+  }
   if (Number.isInteger(input.tabId) && Number(input.tabId) > 0) return debuggerController.run(input);
   const tab = await currentTab(readWindowId(message.windowId));
   return debuggerController.run({ ...input, tabId: tab.id });
@@ -175,8 +205,8 @@ function navigate(message: Record<string, unknown>) {
     tabs: {
       query: (query: Record<string, unknown>) => queryTabs(query, readWindowId(message.windowId)),
       get: (tabId: number) => browser.tabs.get(tabId),
-      create: (properties: Record<string, unknown>) => browser.tabs.create(properties),
-      update: (tabId: number, properties: Record<string, unknown>) => browser.tabs.update(tabId, properties),
+      create: (properties: Record<string, unknown>) => createTab(properties),
+      update: (tabId: number, properties: Record<string, unknown>) => updateTab(tabId, properties),
       remove: (tabId: number) => browser.tabs.remove(tabId),
       reload: (tabId?: number) => (tabId === undefined ? browser.tabs.reload() : browser.tabs.reload(tabId)),
       goBack: (tabId?: number) => (tabId === undefined ? browser.tabs.goBack() : browser.tabs.goBack(tabId)),
@@ -185,28 +215,132 @@ function navigate(message: Record<string, unknown>) {
       onRemoved: browser.tabs.onRemoved,
     } as never,
     webNavigation: browser.webNavigation as never,
+    currentTabId: readTargetTabId(message.targetTabId),
   }).navigate(message.input);
+}
+
+async function chromeApi(message: Record<string, unknown>) {
+  const targetTabId = readTargetTabId(message.targetTabId);
+  const requestedTabId = readChromeApiTabId(message);
+  if (targetTabId !== undefined && requestedTabId !== undefined) await assertTargetTab(targetTabId, requestedTabId);
+  return chromeApiBroker(message);
 }
 
 function readWindowId(value: unknown) {
   return Number.isInteger(value) && Number(value) > 0 ? Number(value) : undefined;
 }
 
-function extractPageDocument(message: Record<string, unknown>) {
-  if (!Number.isInteger(message.tabId) || Number(message.tabId) <= 0) throw new Error('taber.getDocument.extractPage requires tabId');
+function readTargetTabId(value: unknown) {
+  if (value === undefined) return undefined;
+  if (Number.isInteger(value) && Number(value) > 0) return Number(value);
+  throw new Error(`Invalid target tab id: ${String(value)}`);
+}
+
+function readMessageTabId(value: unknown, error: string) {
+  if (Number.isInteger(value) && Number(value) > 0) return Number(value);
+  throw new Error(error);
+}
+
+function readFrameId(value: unknown) {
+  if (value === undefined) return undefined;
+  if (Number.isInteger(value) && Number(value) >= 0) return Number(value);
+  throw new Error(`Invalid frame id: ${String(value)}`);
+}
+
+async function assertMessageTarget(message: Record<string, unknown>, requestedTabId: number) {
+  const targetTabId = readTargetTabId(message.targetTabId);
+  if (targetTabId === undefined) return;
+  await assertTargetTab(targetTabId, requestedTabId);
+}
+
+async function assertTargetTab(targetTabId: number, requestedTabId: number) {
+  if (requestedTabId !== targetTabId) throw targetMismatchError(targetTabId, requestedTabId);
+  await activateTargetTab(targetTabId);
+}
+
+async function activateTargetTab(tabId: number) {
+  const tab = await requireTargetTab(tabId);
+  const activeTab = await updateTab(tabId, { active: true });
+  return { ...tab, ...activeTab };
+}
+
+async function requireTargetTab(tabId: number): Promise<BrowserTabLike> {
+  let tab: BrowserTabLike | undefined;
+  try {
+    tab = await browser.tabs.get(tabId) as BrowserTabLike | undefined;
+  } catch {
+    throw new Error(`Target tab is no longer available: ${tabId}`);
+  }
+  if (!tab) throw new Error(`Target tab is no longer available: ${tabId}`);
+  if (!isOperableTab(tab)) throw new Error(`Target tab is not operable: ${effectiveTabUrl(tab) || tabId}`);
+  return tab;
+}
+
+function targetMismatchError(targetTabId: number, requestedTabId: number) {
+  return new Error(`Task is locked to target tab ${targetTabId}; received tabId ${requestedTabId}. Use navigate.switchTab to change the task target.`);
+}
+
+async function createTab(properties: Record<string, unknown>) {
+  const tab = await browser.tabs.create(properties) as BrowserTabLike | undefined;
+  if (!tab) throw new Error('Chrome tab was not created');
+  if (properties.active !== false) await focusTabWindow(tab);
+  return tab;
+}
+
+async function updateTab(tabId: number, properties: Record<string, unknown>) {
+  const tab = await browser.tabs.update(tabId, properties) as BrowserTabLike | undefined;
+  if (!tab) throw new Error(`Target tab is no longer available: ${tabId}`);
+  if (properties.active === true) await focusTabWindow(tab);
+  return tab;
+}
+
+async function focusTabWindow(tab: { windowId?: number }) {
+  if (Number.isInteger(tab.windowId) && Number(tab.windowId) > 0) await browser.windows.update(Number(tab.windowId), { focused: true }).catch(() => undefined);
+}
+
+function tabContext(tab: BrowserTabLike) {
+  return {
+    id: requireTabId(tab),
+    windowId: tab.windowId,
+    title: tab.title,
+    url: effectiveTabUrl(tab),
+    favIconUrl: tab.favIconUrl,
+  };
+}
+
+function readChromeApiTabId(message: Record<string, unknown>) {
+  const args = Array.isArray(message.args) ? message.args : [];
+  const action = typeof message.action === 'string' ? message.action : '';
+  if (action === 'userScripts.execute' || action === 'scripting.executeScript') return readNestedTabId(args[0], ['target', 'tabId']);
+  if (action === 'webNavigation.getAllFrames') return readNestedTabId(args[0], ['tabId']);
+  if (action.startsWith('debugger.')) return readNestedTabId(args[0], ['tabId']);
+  return undefined;
+}
+
+function readNestedTabId(value: unknown, path: string[]) {
+  let current = value;
+  for (const key of path) current = isRecord(current) ? current[key] : undefined;
+  return Number.isInteger(current) && Number(current) > 0 ? Number(current) : undefined;
+}
+
+async function extractPageDocument(message: Record<string, unknown>) {
+  const tabId = readMessageTabId(message.tabId, 'taber.getDocument.extractPage requires tabId');
   const input = parseGetDocumentInput(isRecord(message.input) ? message.input : {});
   if (input.source !== 'currentPage') throw new Error('taber.getDocument.extractPage requires source=currentPage');
+  await assertMessageTarget(message, tabId);
   return browser.scripting.executeScript({
-    target: { tabId: Number(message.tabId) },
+    target: { tabId },
     func: extractDocumentFromPage,
     args: [input],
   }).then((result) => result[0]?.result);
 }
 
-function captureVisibleTab(message: Record<string, unknown>) {
+async function captureVisibleTab(message: Record<string, unknown>) {
   const input = parseExtractImageInput(isRecord(message.input) ? message.input : {});
   if (input.source !== 'viewport') throw new Error('taber.extractImage.captureVisibleTab only supports source=viewport');
-  return currentTab(readWindowId(message.windowId)).then((tab) => browser.tabs.captureVisibleTab(tab.windowId, captureVisibleTabDetails(input)));
+  const targetTabId = readTargetTabId(message.targetTabId);
+  const tab = targetTabId === undefined ? await currentTab(readWindowId(message.windowId)) : await activateTargetTab(targetTabId);
+  return browser.tabs.captureVisibleTab(requireWindowId(tab), captureVisibleTabDetails(input));
 }
 
 function captureVisibleTabDetails(input: Extract<ExtractImageInput, { source: 'viewport' }>) {
@@ -214,20 +348,24 @@ function captureVisibleTabDetails(input: Extract<ExtractImageInput, { source: 'v
   return { format: 'png' as const };
 }
 
-function extractPageImage(message: Record<string, unknown>) {
-  if (!Number.isInteger(message.tabId) || Number(message.tabId) <= 0) throw new Error('taber.extractImage.extractPage requires tabId');
+async function extractPageImage(message: Record<string, unknown>) {
+  const tabId = readMessageTabId(message.tabId, 'taber.extractImage.extractPage requires tabId');
   const input = parseExtractImageInput(isRecord(message.input) ? message.input : {});
   if (input.source === 'viewport') throw new Error('taber.extractImage.extractPage does not support viewport; use captureVisibleTab');
+  await assertMessageTarget(message, tabId);
   return browser.scripting.executeScript({
-    target: { tabId: Number(message.tabId) },
+    target: { tabId },
     func: extractImageFromPage,
     args: [input],
   }).then((result) => result[0]?.result);
 }
 
-function startTask(message: Record<string, unknown>) {
+async function startTask(message: Record<string, unknown>) {
   if (typeof message.prompt !== 'string') throw new Error('Task prompt is required');
-  return agentHost.startTask({ prompt: message.prompt, sessionId: readSessionId(message.sessionId), windowId: readWindowId(message.windowId) });
+  const windowId = readRequiredWindowId(message.windowId);
+  const tab = await currentTab(windowId);
+  const targetTab = tabContext(tab);
+  return agentHost.startTask({ prompt: message.prompt, sessionId: readSessionId(message.sessionId), windowId: targetTab.windowId ?? windowId, targetTabId: targetTab.id, targetTab, locale: readAgentLocale(message.locale) });
 }
 
 function isPrivilegedMessageType(type: string) {
@@ -292,12 +430,15 @@ function withUserScriptTimeout(promise: Promise<unknown>, timeoutMs?: number) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
-function executeBrowserReplScriptingCommand(message: Record<string, unknown>) {
-  if (!Number.isInteger(message.tabId) || Number(message.tabId) <= 0) throw new Error('taber.browserRepl.scriptingCommand requires tabId');
-  const chromeApi = (globalThis as typeof globalThis & { chrome?: { scripting?: { executeScript(details: unknown): Promise<unknown> } } }).chrome;
-  if (!chromeApi?.scripting?.executeScript) throw new Error('chrome.scripting API is unavailable');
+async function executeBrowserReplScriptingCommand(message: Record<string, unknown>) {
+  const tabId = readMessageTabId(message.tabId, 'taber.browserRepl.scriptingCommand requires tabId');
+  await assertMessageTarget(message, tabId);
+  const scripting = (globalThis as typeof globalThis & { chrome?: { scripting?: { executeScript(details: unknown): Promise<unknown> } } }).chrome?.scripting;
+  if (!scripting?.executeScript) throw new Error('chrome.scripting API is unavailable');
 
   const command = (isRecord(message.command) ? message.command : {}) as BrowserReplPageCommand;
+  const frameId = readFrameId(message.frameId);
+  const target = frameId === undefined ? { tabId } : { tabId, frameIds: [frameId] };
   const requestId = typeof command.cancelKey === 'string' ? command.cancelKey : crypto.randomUUID();
   const timeoutMs = readScriptingTimeout(command.timeoutMs);
   const promise = new Promise((resolve, reject) => {
@@ -308,12 +449,11 @@ function executeBrowserReplScriptingCommand(message: Record<string, unknown>) {
     scriptingFallbacks.set(requestId, { resolve, reject, timeoutId });
   });
 
-  const executeScript = chromeApi.scripting.executeScript({
-    target: { tabId: Number(message.tabId) },
-    world: 'ISOLATED',
-    func: runBrowserReplPageRuntime,
-    args: [command, requestId],
-  }).catch((error) => {
+  const executeScript = scripting.executeScript({ target, world: 'ISOLATED', func: runTaberPageOverlayCommand, args: [{ action: 'install' }] })
+    .then(() => scripting.executeScript({ target, world: 'ISOLATED', func: createBrowserReplPageIntrospection }))
+    .then(() => scripting.executeScript({ target, world: 'ISOLATED', func: installBrowserReplPageLocator }))
+    .then(() => scripting.executeScript({ target, world: 'ISOLATED', func: runBrowserReplPageRuntimeInjected, args: [command, requestId] }))
+    .catch((error) => {
     clearScriptingFallback(requestId);
     throw error;
   });

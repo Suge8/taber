@@ -1,3 +1,5 @@
+import { effectiveTabUrl, isOperableTab } from './active-tab.ts';
+
 export const navigateRequestType = 'taber.navigate.request';
 export const DEFAULT_NAVIGATION_TIMEOUT_MS = 15_000;
 export const MAX_NAVIGATION_TIMEOUT_MS = 60_000;
@@ -28,6 +30,7 @@ export type NavigateTab = {
   status?: string;
   title?: string;
   url?: string;
+  favIconUrl?: string;
   windowId?: number;
 };
 
@@ -69,6 +72,7 @@ type BrowserTab = {
   title?: string;
   url?: string;
   pendingUrl?: string;
+  favIconUrl?: string;
   windowId?: number;
 };
 
@@ -106,6 +110,7 @@ export function createNavigateController(options: {
   tabs: TabsApi;
   webNavigation: WebNavigationApi;
   scheduler?: Scheduler;
+  currentTabId?: number;
 }) {
   const scheduler = options.scheduler ?? {
     setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
@@ -125,13 +130,16 @@ export function createNavigateController(options: {
       case 'reload':
         return reloadTab(input);
       case 'listTabs':
-        return { action: input.action, tabs: (await options.tabs.query({})).map(toNavigateTab) };
+        return { action: input.action, tabs: (await options.tabs.query({})).filter(isOperableTab).map(toNavigateTab) };
       case 'switchTab': {
-        const tab = await options.tabs.update(requireInputTabId(input), { active: true });
-        return { action: input.action, tab: toNavigateTab(tab) };
+        if (options.currentTabId !== undefined) await currentTab();
+        const tabId = requireInputTabId(input);
+        assertOperableTab(await options.tabs.get(tabId));
+        const tab = await options.tabs.update(tabId, { active: true });
+        return { action: input.action, tab: toNavigateTab(assertOperableTab(tab)) };
       }
       case 'closeTab': {
-        const tabId = requireInputTabId(input);
+        const tabId = lockedInputTabId(input);
         await options.tabs.remove(tabId);
         return { action: input.action, tabId };
       }
@@ -145,16 +153,17 @@ export function createNavigateController(options: {
   async function openTab(input: NavigateInput): Promise<NavigateResult> {
     const url = requireUrl(input);
     if ((input.target ?? 'current') === 'new') {
-      const tab = await options.tabs.create({ url, active: input.active ?? true });
+      if (input.tabId !== undefined) assertUnlockedInputTab(input, input.tabId);
+      const tab = await options.tabs.create({ url, active: input.active ?? true, ...await lockedTargetWindow() });
       const navigation = await waitForTabNavigation(requireTabId(tab), timeoutMs(input), true);
-      return { action: input.action, navigation, tab: toNavigateTab(await options.tabs.get(requireTabId(tab))) };
+      return { action: input.action, navigation, tab: toNavigateTab(assertOperableTab(await options.tabs.get(requireTabId(tab)))) };
     }
 
-    const tabId = input.tabId ?? requireTabId(await currentTab());
+    const tabId = await currentTabId(input);
     const waiter = waitForTabNavigation(tabId, timeoutMs(input));
     try {
       await options.tabs.update(tabId, { active: true, url });
-      return { action: input.action, navigation: await waiter, tab: toNavigateTab(await options.tabs.get(tabId)) };
+      return { action: input.action, navigation: await waiter, tab: toNavigateTab(assertOperableTab(await options.tabs.get(tabId))) };
     } catch (error) {
       waiter.cancel();
       throw error;
@@ -162,12 +171,13 @@ export function createNavigateController(options: {
   }
 
   async function moveInHistory(input: NavigateInput, direction: 'back' | 'forward'): Promise<NavigateResult> {
-    const tabId = input.tabId ?? requireTabId(await currentTab());
+    const tabId = await currentTabId(input);
     const waiter = waitForTabNavigation(tabId, timeoutMs(input));
     try {
+      await options.tabs.update(tabId, { active: true });
       if (direction === 'back') await options.tabs.goBack(tabId);
       else await options.tabs.goForward(tabId);
-      return { action: input.action, navigation: await waiter, tab: toNavigateTab(await options.tabs.get(tabId)) };
+      return { action: input.action, navigation: await waiter, tab: toNavigateTab(assertOperableTab(await options.tabs.get(tabId))) };
     } catch (error) {
       waiter.cancel();
       throw error;
@@ -175,11 +185,12 @@ export function createNavigateController(options: {
   }
 
   async function reloadTab(input: NavigateInput): Promise<NavigateResult> {
-    const tabId = input.tabId ?? requireTabId(await currentTab());
+    const tabId = await currentTabId(input);
     const waiter = waitForTabNavigation(tabId, timeoutMs(input));
     try {
+      await options.tabs.update(tabId, { active: true });
       await options.tabs.reload(tabId);
-      return { action: input.action, navigation: await waiter, tab: toNavigateTab(await options.tabs.get(tabId)) };
+      return { action: input.action, navigation: await waiter, tab: toNavigateTab(assertOperableTab(await options.tabs.get(tabId))) };
     } catch (error) {
       waiter.cancel();
       throw error;
@@ -187,9 +198,46 @@ export function createNavigateController(options: {
   }
 
   async function currentTab() {
+    if (options.currentTabId !== undefined) return lockedCurrentTab();
     const tabs = await options.tabs.query({ active: true, currentWindow: true });
-    if (!tabs[0]) throw new Error('No active tab in current window');
-    return tabs[0];
+    const tab = tabs.find(isOperableTab);
+    if (!tab) throw new Error('No operable http/https active tab in current window');
+    return tab;
+  }
+
+  async function lockedCurrentTab() {
+    let tab: BrowserTab;
+    try {
+      tab = await options.tabs.get(options.currentTabId as number);
+    } catch {
+      throw new Error(`Target tab is no longer available: ${options.currentTabId}`);
+    }
+    if (!isOperableTab(tab)) throw new Error(`Target tab is not operable: ${effectiveTabUrl(tab) || requireTabId(tab)}`);
+    return tab;
+  }
+
+  async function currentTabId(input: NavigateInput) {
+    const tabId = input.tabId ?? requireTabId(await currentTab());
+    assertUnlockedInputTab(input, tabId);
+    return tabId;
+  }
+
+  async function lockedTargetWindow() {
+    if (options.currentTabId === undefined) return {};
+    const windowId = (await currentTab()).windowId;
+    if (!Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error(`Target tab window id is missing: ${options.currentTabId}`);
+    return { windowId: Number(windowId) };
+  }
+
+  function lockedInputTabId(input: NavigateInput) {
+    const tabId = requireInputTabId(input);
+    assertUnlockedInputTab(input, tabId);
+    return tabId;
+  }
+
+  function assertUnlockedInputTab(input: NavigateInput, tabId: number) {
+    if (options.currentTabId === undefined || tabId === options.currentTabId) return;
+    throw new Error(`navigate.${input.action} is locked to target tab ${options.currentTabId}; received tabId ${tabId}. Use navigate.switchTab to change the task target.`);
   }
 
   function waitForTabNavigation(tabId: number, timeoutMs: number, checkExisting = false) {
@@ -219,7 +267,7 @@ export function createNavigateController(options: {
         }
       };
       const onUpdated = (updatedTabId: number, changeInfo: { status?: string }, tab: BrowserTab) => {
-        if (updatedTabId === tabId && changeInfo.status === 'complete') complete(tab.url ?? tab.pendingUrl);
+        if (updatedTabId === tabId && changeInfo.status === 'complete') complete(effectiveTabUrl(tab));
       };
       const onRemoved = (removedTabId: number) => {
         if (removedTabId === tabId) fail(new Error(`Tab closed before navigation completed: ${tabId}`));
@@ -242,7 +290,7 @@ export function createNavigateController(options: {
 
       if (checkExisting) {
         void options.tabs.get(tabId).then((tab) => {
-          if (tab.status === 'complete') complete(tab.url ?? tab.pendingUrl);
+          if (tab.status === 'complete') complete(effectiveTabUrl(tab));
         }, () => undefined);
       }
     });
@@ -298,6 +346,11 @@ function timeoutMs(input: NavigateInput) {
   return input.timeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS;
 }
 
+function assertOperableTab<T extends BrowserTab>(tab: T) {
+  if (isOperableTab(tab)) return tab;
+  throw new Error(`Tab is not operable: ${effectiveTabUrl(tab) || requireTabId(tab)}`);
+}
+
 function toNavigateTab(tab: BrowserTab): NavigateTab {
   return {
     id: requireTabId(tab),
@@ -305,7 +358,8 @@ function toNavigateTab(tab: BrowserTab): NavigateTab {
     index: Number.isInteger(tab.index) ? Number(tab.index) : 0,
     status: tab.status,
     title: tab.title,
-    url: tab.url ?? tab.pendingUrl,
+    url: effectiveTabUrl(tab),
+    ...(tab.favIconUrl ? { favIconUrl: tab.favIconUrl } : {}),
     windowId: tab.windowId,
   };
 }
