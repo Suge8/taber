@@ -1,7 +1,9 @@
 import { isPageAccessError, pageAccessErrorMessage } from './browser-access.ts';
 import { extractDocumentMarkdownFromHtml, htmlToMarkdown as documentHtmlToMarkdown, type ExtractedTable } from './document-markdown.ts';
+import type { PageDocument, PageDocumentFrame } from './get-document-page.ts';
 
 export type { ExtractedTable } from './document-markdown.ts';
+export { extractDocumentFromPage, type PageDocument, type PageDocumentFrame } from './get-document-page.ts';
 
 export const ARTICLE_CONTENT_LIMIT = 80_000;
 export const PAGE_CONTENT_LIMIT = 40_000;
@@ -24,6 +26,8 @@ type GetDocumentSuccessBase = {
   fallback?: 'page';
   tables?: ExtractedTable[];
   tablesTruncated?: boolean;
+  hints?: string[];
+  frames?: PageDocumentFrame[];
 };
 
 export type GetDocumentSuccess =
@@ -51,38 +55,17 @@ export type GetDocumentRecoverableError = {
 export type GetDocumentResult = GetDocumentSuccess | GetDocumentRecoverableError;
 
 export const getDocumentInputJsonSchema = {
-  anyOf: [
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source', 'mode'],
-      properties: {
-        source: { type: 'string', enum: ['currentPage'], description: 'Read the current browser tab DOM.' },
-        mode: { type: 'string', enum: ['article', 'page', 'selection'], description: 'article uses Readability with page fallback; page reads full DOM Markdown; selection reads selected text only.' },
-        tabId: { type: 'integer', minimum: 1, description: 'Browser tab id. Defaults to the active tab.' },
-        includeTables: { type: 'boolean', description: 'Include extracted table objects with stable rows and Markdown table text.' },
-      },
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source', 'url'],
-      properties: {
-        source: { type: 'string', enum: ['pdf'], description: 'Fetch and extract text from a PDF URL.' },
-        url: { type: 'string', minLength: 1, description: 'PDF URL.' },
-      },
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source', 'fileText'],
-      properties: {
-        source: { type: 'string', enum: ['file'], description: 'Use text that was already provided by the UI.' },
-        fileName: { type: 'string', description: 'Display name for the provided text.' },
-        fileText: { type: 'string', description: 'Plain text file content supplied by the UI.' },
-      },
-    },
-  ],
+  type: 'object',
+  additionalProperties: false,
+  required: ['source'],
+  properties: {
+    source: { type: 'string', enum: ['currentPage', 'pdf', 'file'], description: 'currentPage reads the controlled browser tab DOM; pdf fetches a PDF URL; file uses text already provided by the UI.' },
+    mode: { type: 'string', enum: ['article', 'page', 'selection'], description: 'Required for source:"currentPage". article uses Readability with page fallback; page reads full DOM Markdown; selection reads selected text only.' },
+    includeTables: { type: 'boolean', description: 'Only for source:"currentPage". Include extracted table objects with stable rows and Markdown table text.' },
+    url: { type: 'string', minLength: 1, description: 'Required for source:"pdf". PDF URL.' },
+    fileName: { type: 'string', description: 'Only for source:"file". Display name for the provided text.' },
+    fileText: { type: 'string', description: 'Required for source:"file". Plain text file content supplied by the UI.' },
+  },
 } as const;
 
 const currentPageInputKeys = new Set(['source', 'mode', 'tabId', 'includeTables']);
@@ -129,30 +112,18 @@ export function createGetDocumentController(options: {
     if (input.mode === 'selection') return selectionResult(snapshot, input);
 
     const page = extractDocumentMarkdownFromHtml(snapshot.html, { title: snapshot.title, includeTables: input.includeTables });
-    if (input.mode === 'page') return currentPageResult(input, snapshot, page.markdown, { tables: page.tables, limit: PAGE_CONTENT_LIMIT });
+    if (input.mode === 'page') {
+      const mainContent = page.markdown || snapshot.visibleText || '';
+      return currentPageResult(input, snapshot, mainContent, { tables: page.tables, limit: PAGE_CONTENT_LIMIT, hints: pageResultHints(snapshot, page.markdown) });
+    }
 
     const readable = await parseArticleHtml(snapshot.html, snapshot.url).catch(() => undefined);
-    if (readable?.content) return currentPageResult(input, snapshot, readable.content, { title: readable.title, url: readable.url, tables: page.tables, limit: ARTICLE_CONTENT_LIMIT });
-    return currentPageResult(input, snapshot, page.article || page.markdown, { fallback: 'page', tables: page.tables, limit: PAGE_CONTENT_LIMIT });
+    if (readable?.content) return currentPageResult(input, snapshot, readable.content, { title: readable.title, url: readable.url, tables: page.tables, limit: ARTICLE_CONTENT_LIMIT, hints: pageResultHints(snapshot, readable.content) });
+    const fallbackContent = page.article || page.markdown || snapshot.visibleText || '';
+    return currentPageResult(input, snapshot, fallbackContent, { fallback: 'page', tables: page.tables, limit: PAGE_CONTENT_LIMIT, hints: pageResultHints(snapshot, fallbackContent) });
   }
 
   return { run };
-}
-
-export type PageDocument = {
-  title?: string;
-  url?: string;
-  selection: string;
-  html: string;
-};
-
-export function extractDocumentFromPage(_input: CurrentPageDocumentInput): PageDocument {
-  return {
-    title: document.title,
-    url: location.href,
-    selection: String(getSelection()?.toString() ?? '').trim(),
-    html: document.documentElement.outerHTML,
-  };
 }
 
 function readCurrentPageInput(value: Record<string, unknown>): CurrentPageDocumentInput {
@@ -194,9 +165,9 @@ function currentPageResult(
   input: CurrentPageDocumentInput,
   snapshot: PageDocument,
   content: string,
-  options: { title?: string; url?: string; fallback?: 'page'; tables?: ExtractedTable[]; limit: number },
+  options: { title?: string; url?: string; fallback?: 'page'; tables?: ExtractedTable[]; limit: number; hints?: string[] },
 ): GetDocumentResult {
-  if (!content.trim()) return noReadableContent(input.mode);
+  if (!hasReadableCurrentPageContent(content, snapshot)) return noReadableContent(input.mode);
   return {
     ok: true as const,
     source: 'currentPage' as const,
@@ -206,7 +177,36 @@ function currentPageResult(
     ...contentFields(content, options.limit),
     ...(options.fallback ? { fallback: options.fallback } : {}),
     ...tableFields(options.tables ?? [], input.includeTables),
+    ...hintFields(options.hints),
+    ...frameFields(snapshot.frames),
   };
+}
+
+function hasReadableCurrentPageContent(mainContent: string, snapshot: PageDocument) {
+  // Same-origin frame text is readable content, but it stays under frames[] instead of main content.
+  return Boolean(mainContent.trim() || hasReadableFrameText(snapshot));
+}
+
+function hasReadableFrameText(snapshot: PageDocument) {
+  return Boolean(snapshot.frames?.some((frame) => frame.readable && frame.text?.trim()));
+}
+
+function pageResultHints(snapshot: PageDocument, mainContent: string) {
+  const hints = [...snapshot.hints ?? []];
+  const visibleChars = (snapshot.visibleText ?? '').trim().length;
+  const contentChars = mainContent.trim().length;
+  if (snapshot.spaShell || contentChars < 80 && (visibleChars > contentChars + 20 || (snapshot.interactiveCount ?? 0) > 0)) {
+    hints.push('Dynamic SPA shell likely: article/HTML extraction is sparse; use browser.snapshot, readVisibleText(), or queryText() for runtime-visible content.');
+  }
+  return [...new Set(hints)];
+}
+
+function hintFields(hints: string[] | undefined) {
+  return hints?.length ? { hints } : {};
+}
+
+function frameFields(frames: PageDocumentFrame[] | undefined) {
+  return frames?.length ? { frames } : {};
 }
 
 function fileResult(input: FileDocumentInput): GetDocumentResult {

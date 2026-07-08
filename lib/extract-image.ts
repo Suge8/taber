@@ -54,58 +54,15 @@ export type ExtractImageSuccess = ExtractImageDataSuccess | ExtractImageReferenc
 export type ExtractImageResult = ExtractImageSuccess | ExtractImageRecoverableError;
 
 export const extractImageInputJsonSchema = {
-  anyOf: [
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source'],
-      properties: {
-        source: { type: 'string', enum: ['viewport'], description: 'Capture the current visible viewport. To capture another tab, switch to it first.' },
-        format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format. Defaults to png.' },
-        jpegQuality: { type: 'integer', minimum: 0, maximum: 100, description: 'JPEG quality from 0 to 100. Only valid when format is jpeg.' },
-      },
-      allOf: [
-        { if: { required: ['jpegQuality'] }, then: { required: ['format'], properties: { format: { enum: ['jpeg'] } } } },
-        { if: { required: ['format'], properties: { format: { enum: ['png'] } } }, then: { not: { required: ['jpegQuality'] } } },
-      ],
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source', 'selector'],
-      properties: {
-        source: { type: 'string', enum: ['imageElement'], description: 'Read an <img> element URL or data URL from a CSS selector.' },
-        selector: { type: 'string', minLength: 1, description: 'CSS selector for the target <img> element.' },
-        tabId: { type: 'integer', minimum: 1, description: 'Browser tab id. Defaults to the active tab.' },
-      },
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source', 'selector'],
-      properties: {
-        source: { type: 'string', enum: ['canvas'], description: 'Capture a <canvas> element from a CSS selector.' },
-        selector: { type: 'string', minLength: 1, description: 'CSS selector for the target <canvas> element.' },
-        tabId: { type: 'integer', minimum: 1, description: 'Browser tab id. Defaults to the active tab.' },
-        format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format. Defaults to png.' },
-        jpegQuality: { type: 'integer', minimum: 0, maximum: 100, description: 'JPEG quality from 0 to 100. Only valid when format is jpeg.' },
-      },
-      allOf: [
-        { if: { required: ['jpegQuality'] }, then: { required: ['format'], properties: { format: { enum: ['jpeg'] } } } },
-        { if: { required: ['format'], properties: { format: { enum: ['png'] } } }, then: { not: { required: ['jpegQuality'] } } },
-      ],
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['source', 'selector'],
-      properties: {
-        source: { type: 'string', enum: ['backgroundImage'], description: 'Read CSS background-image URL or data URL from a CSS selector.' },
-        selector: { type: 'string', minLength: 1, description: 'CSS selector for the target element.' },
-        tabId: { type: 'integer', minimum: 1, description: 'Browser tab id. Defaults to the active tab.' },
-      },
-    },
-  ],
+  type: 'object',
+  additionalProperties: false,
+  required: ['source'],
+  properties: {
+    source: { type: 'string', enum: ['viewport', 'imageElement', 'canvas', 'backgroundImage'], description: 'viewport captures the current visible viewport; imageElement reads an <img> URL; canvas captures canvas pixels; backgroundImage reads a CSS background-image URL.' },
+    selector: { type: 'string', minLength: 1, description: 'Required for source:"imageElement", source:"canvas", and source:"backgroundImage". Native CSS selector on the controlled tab. Omit for source:"viewport".' },
+    format: { type: 'string', enum: ['png', 'jpeg'], description: 'Only for source:"viewport" or source:"canvas". Image format. Defaults to png.' },
+    jpegQuality: { type: 'integer', minimum: 0, maximum: 100, description: 'Only for source:"viewport" or source:"canvas" with format:"jpeg". JPEG quality from 0 to 100.' },
+  },
 } as const;
 
 type ExtractImageViewportInput = Extract<ExtractImageInput, { source: 'viewport' }>;
