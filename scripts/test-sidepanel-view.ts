@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { projectAgentEvents } from '../lib/agent-event-projection.ts';
-import { createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, hideReasoningText, latestImagePreview, orderQuickActions, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
+import { rawToolDetails, toolHeaderSummary } from '../lib/sidepanel-tool-presentation.ts';
+import { controlledTargetFromContext, createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, hideReasoningText, latestImagePreview, orderQuickActions, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
 import { detectLocale, formatTime, messages as sidepanelMessages } from '../lib/sidepanel-i18n.ts';
+import { normalizeAssistantMarkdown } from '../lib/components/ai-elements/response/markdown.ts';
 
 const events = [
   { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'task-1', prompt: 'Summarize this page', context: { id: 12, windowId: 3, title: 'Article', url: 'https://example.com/a', favIconUrl: 'https://example.com/icon.png' } }, createdAt: 1 },
@@ -42,6 +44,13 @@ assert.equal(timeline.length, 2);
 assert.equal(timeline[0].status, 'completed');
 assert.match(timeline[0].inputSummary, /currentPage/);
 assert.match(timeline[0].outputSummary ?? '', /content/);
+
+const failedWithoutAssistantOutput = deriveTimeline([
+  { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'fail-fast', prompt: 'go' }, createdAt: 1 },
+  { id: 2, sessionId: 1, type: 'task.failed', payload: { taskId: 'fail-fast', error: 'HTTP 400 unsupported parameter: reasoning_effort' }, createdAt: 2 },
+]);
+assert.equal(failedWithoutAssistantOutput[1].kind === 'assistantTurn' ? failedWithoutAssistantOutput[1].turn.status : '', 'failed');
+assert.match(failedWithoutAssistantOutput[1].kind === 'assistantTurn' && failedWithoutAssistantOutput[1].turn.parts[0].kind === 'text' ? failedWithoutAssistantOutput[1].turn.parts[0].message.text : '', /reasoning_effort/);
 
 const hiddenPayload = formatPayload({
   chainOfThought: 'secret',
@@ -91,6 +100,19 @@ const cancelledStream = deriveConversation([
 assert.equal(cancelledStream.length, 2);
 assert.equal(cancelledStream[1].text, 'partial');
 
+const progressTimeline = deriveTimeline([
+  { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'progress-task', prompt: 'go' }, createdAt: 1 },
+  { id: 2, sessionId: 1, type: 'reasoning.started', payload: { taskId: 'progress-task', reasoningId: 'r1' }, createdAt: 2 },
+  { id: 3, sessionId: 1, type: 'reasoning.appended', payload: { taskId: 'progress-task', reasoningId: 'r1', delta: 'Need inspect' }, createdAt: 3 },
+  { id: 4, sessionId: 1, type: 'tool.input.started', payload: { taskId: 'progress-task', toolCallId: 'call-1', toolName: 'browserRepl' }, createdAt: 4 },
+  { id: 5, sessionId: 1, type: 'tool.input.appended', payload: { taskId: 'progress-task', toolCallId: 'call-1', delta: '{"code":' }, createdAt: 5 },
+  { id: 6, sessionId: 1, type: 'tool.input.completed', payload: { taskId: 'progress-task', toolCallId: 'call-1', toolName: 'browserRepl', input: { code: 'return 1' } }, createdAt: 6 },
+]);
+assert.deepEqual(progressTimeline[1].kind === 'assistantTurn' ? progressTimeline[1].turn.parts.map((part) => part.kind) : [], ['reasoning', 'tool']);
+assert.equal(progressTimeline[1].kind === 'assistantTurn' && progressTimeline[1].turn.parts[0].kind === 'reasoning' ? progressTimeline[1].turn.parts[0].reasoning.text : '', 'Need inspect');
+assert.equal(progressTimeline[1].kind === 'assistantTurn' && progressTimeline[1].turn.parts[1].kind === 'tool' ? progressTimeline[1].turn.parts[1].tool.status : '', 'pending');
+assert.match(progressTimeline[1].kind === 'assistantTurn' && progressTimeline[1].turn.parts[1].kind === 'tool' ? progressTimeline[1].turn.parts[1].tool.inputSummary : '', /return 1/);
+
 assert.equal(hideReasoningText('<think>secret Visible'), '[reasoning hidden]');
 assert.equal(hideReasoningText('<think >secret</think>Visible'), '[reasoning hidden]Visible');
 assert.equal(hideReasoningText('<think attr="x">secret</think>Visible'), '[reasoning hidden]Visible');
@@ -118,6 +140,65 @@ const localizedSources = deriveSources({ url: 'https://example.com/c' }, [], sid
 assert.equal(localizedSources[0].label, '当前页');
 assert.equal(localizedSources[0].domain, 'example.com');
 assert.equal(localizedSources[0].faviconUrl, 'https://example.com/favicon.ico');
+
+const targetChangedEvents = [
+  { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'target-task', prompt: 'go', context: { id: 21, windowId: 4, title: 'Start', url: 'https://start.example/page', favIconUrl: 'https://start.example/icon.png' } }, createdAt: 1 },
+  { id: 2, sessionId: 1, type: 'task.targetChanged', payload: { taskId: 'target-task', fromTabId: 21, toTabId: 22, reason: 'userCurrentTab', tab: { id: 22, windowId: 4, title: 'Target', url: 'https://target.example/page', favIconUrl: 'https://target.example/icon.png' } }, createdAt: 2 },
+] as const;
+const targetTask = deriveSidebarTaskView([...targetChangedEvents]);
+assert.equal(targetTask.context?.url, 'https://target.example/page');
+const controlledTarget = controlledTargetFromContext(targetTask.context, sidepanelMessages.en.sources);
+assert.deepEqual(controlledTarget, { label: 'Target', url: 'https://target.example/page', domain: 'target.example', faviconUrl: 'https://target.example/icon.png', tabId: 22, windowId: 4 });
+const targetSources = deriveSources(targetTask.context, [...targetChangedEvents], sidepanelMessages.en.sources);
+assert.equal(targetSources[0].url, 'https://target.example/page');
+assert.equal(targetSources[0].tabId, 22);
+const targetTimeline = deriveTimeline([...targetChangedEvents]);
+assert.equal(targetTimeline.length, 1);
+assert.equal(targetTimeline[0].kind, 'message');
+assert.equal(sidepanelMessages.en.sources.viewSources, 'Sources');
+assert.equal(sidepanelMessages.zh.sources.viewSources, '来源');
+assert.equal(sidepanelMessages.en.sources.lastPage, 'Last page');
+assert.equal(sidepanelMessages.zh.sources.lastPage, '上次页面');
+assert.equal(sidepanelMessages.en.sources.switchToCurrentTab, 'Use current tab');
+assert.match(sidepanelMessages.en.sources.noOperableActiveTab, /http\/https/);
+assert.match(sidepanelMessages.zh.sources.noOperableActiveTab, /http\/https/);
+assert.doesNotMatch(sidepanelMessages.en.sources.noOperableActiveTab, /No operable/i);
+assert.match(sidepanelMessages.zh.sources.noOperableActiveTab, /请先选中/);
+assert.equal(controlledTargetFromContext({ url: 'https://example.com/untitled' }, { ...sidepanelMessages.en.sources, controlledPage: sidepanelMessages.en.sources.lastPage })?.label, 'Last page');
+assert.equal('technicalDetails' in sidepanelMessages.en.tool, false);
+assert.equal(sidepanelMessages.en.reasoning.thinking, 'Thinking…');
+assert.equal(sidepanelMessages.zh.reasoning.thinking, '正在思考…');
+assert.equal(sidepanelMessages.zh.reasoning.summary, '思考');
+assert.equal(sidepanelMessages.zh.tool.actions.listTabs, '标签页');
+assert.equal(sidepanelMessages.zh.tool.summary.listTabs(3), '标签页 · 3 个');
+assert.equal(sidepanelMessages.zh.tool.summary.switchTab('anpin.ai'), '切换 anpin.ai');
+
+const recoverableSelectionTool = {
+  id: 'tool-no-selection',
+  toolName: 'getDocument',
+  status: 'completed',
+  createdAt: 1,
+  updatedAt: 1,
+  eventId: 1,
+  input: { source: 'selection' },
+  output: { ok: false, code: 'NO_SELECTION', message: 'No selected text.', retryHint: 'Select text first.' },
+} as const;
+assert.equal(toolHeaderSummary(recoverableSelectionTool, sidepanelMessages.zh, 'zh'), '未选中文本');
+assert.doesNotMatch(toolHeaderSummary(recoverableSelectionTool, sidepanelMessages.zh, 'zh'), /NO_SELECTION/);
+assert.match(rawToolDetails(recoverableSelectionTool), /NO_SELECTION/);
+assert.match(rawToolDetails(recoverableSelectionTool), /Select text first/);
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browser', input: { action: 'press' }, output: { ok: false, code: 'NO_TARGET', message: 'No focused element for press()' } }, sidepanelMessages.zh, 'zh'), '未找到目标元素');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browserRepl', input: { code: 'return await press("Enter")' }, output: { ok: false, code: 'NO_TARGET', message: 'No focused element for press()' } }, sidepanelMessages.zh, 'zh'), '未找到目标元素');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browser', input: { action: 'click' }, output: { ok: false, code: 'AMBIGUOUS_TARGET', message: 'Multiple visible targets match: 保存' } }, sidepanelMessages.zh, 'zh'), '目标不够明确');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browserRepl', input: { code: 'return await click(1)' }, output: { ok: false, code: 'STALE_REF', message: 'Ref is stale. Use browser.snapshot again.' } }, sidepanelMessages.zh, 'zh'), '页面已变化，请重试');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browser', input: { action: 'click' }, output: { ok: false, code: 'UNMAPPED_BROWSER_CODE', message: 'No focused element for press()' } }, sidepanelMessages.zh, 'zh'), sidepanelMessages.zh.tool.errors.inspectFailed);
+assert.doesNotMatch(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browser', input: { action: 'click' }, output: { ok: false, code: 'UNMAPPED_BROWSER_CODE', message: 'No focused element for press()' } }, sidepanelMessages.zh, 'zh'), /No focused/);
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'extractImage', input: { source: 'selector' }, output: { ok: false, code: 'ELEMENT_NOT_FOUND', message: 'Element not found.' } }, sidepanelMessages.zh, 'zh'), '未找到元素');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'extractImage', input: { source: 'viewport' }, output: { ok: true, source: 'viewport', width: 10, height: 20 } }, sidepanelMessages.zh, 'zh'), '截图 · 10×20');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'debugger', input: { action: 'console' }, output: { logs: [{}, {}, {}] } }, sidepanelMessages.zh, 'zh'), '调试 · 3错');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browserRepl', input: { code: 'return await observe()' }, output: { value: 1 } }, sidepanelMessages.zh, 'zh'), '检查');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'listTabs' }, output: { action: 'listTabs', tabs: [{ id: 1 }, { id: 2 }] } }, sidepanelMessages.zh, 'zh'), '标签页 · 2 个');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'switchTab', tabId: 7 }, output: { action: 'switchTab', tab: { id: 7, url: 'https://anpin.ai/dashboard' } } }, sidepanelMessages.zh, 'zh'), '切换 anpin.ai');
 
 const image = latestImagePreview([...events]);
 assert.equal(image?.label, 'viewport · 10×20');
@@ -158,6 +239,37 @@ assert.equal(manualBrowserControlGuide, true);
 assert.equal(settingsTabStartsBrowserControlGuide('providers', true), false);
 assert.equal(shouldAdvanceToProviderSetup({ settingsOpen: true, promptedForBrowserControl: manualBrowserControlGuide, missingBrowserControl: false, hasAnyModel: false, promptedForMissingModel: false }), true);
 assert.equal(shouldAdvanceToProviderSetup({ settingsOpen: true, promptedForBrowserControl: manualBrowserControlGuide, missingBrowserControl: false, hasAnyModel: true, promptedForMissingModel: false }), false);
+
+const pseudoList = '概览：-**账户概览**-当前余额：**$17.23**-API密钥：**2个，均已启用**-当前主要使用平台为**Claude**-Claude今日消费：**$12.7661**-OpenAI、Gemini当前显示为**$0.0000**-**模型分布**-`claude-opus-4-8`：73次请求，实际消费**$8.3179**-使用兑换码充值整体来看，这是账户仪表盘。';
+const normalizedPseudoList = normalizeAssistantMarkdown(pseudoList);
+assert.match(normalizedPseudoList, /概览：\n\n\*\*账户概览\*\*/);
+assert.match(normalizedPseudoList, /\n- 当前余额：\*\*\$17\.23\*\*/);
+assert.match(normalizedPseudoList, /\n- API密钥：/);
+assert.match(normalizedPseudoList, /\n- Claude今日消费：/);
+assert.match(normalizedPseudoList, /当前显示为 \*\*\$0\.0000\*\*/);
+assert.match(normalizedPseudoList, /\n\n\*\*模型分布\*\*/);
+assert.match(normalizedPseudoList, /\n- `claude-opus-4-8`：73次请求，实际消费 \*\*\$8\.3179\*\*/);
+assert.match(normalizedPseudoList, /\n- 使用兑换码充值整体来看，这是账户仪表盘。/);
+const dashboardRaw = '当前页面是**AnPinAI的仪表盘**，核心内容是账户余额、API使用情况、消费统计和近期调用记录概览。主要信息如下：-**账户概览**-当前余额：**$17.23**-API密钥：**2个，均已启用**-用户身份：user-**今日使用情况**-今日请求数：**92次**-今日消费：**$12.7661/$9.8201**-今日Token：**3.3M**-输入：**27.5K**-输出：**26.1K**-平均响应时间：**7.56秒**-**平台消费拆分**-当前主要使用平台为**Claude**-Claude今日消费：**$12.7661**-请求数：**92**-Token：**3.3M**-OpenAI、Gemini、Antigravity当前显示为**$0.0000**-**模型分布**-`claude-opus-4-8`：73次请求，2.7MToken，实际消费**$8.3179**-`claude-fable-5`：18次请求，630.1KToken，实际消费**$4.4363**-`claude-sonnet-4-6`：1次请求，27.2KToken，实际消费**$0.0119**-**最近使用记录**-近期调用集中在`claude-opus-4-8`-最近记录时间为**2026/07/0805:52左右**-单次消费从约**$0.045到$0.3056**不等-**页面提供的快捷操作**-创建API密钥-查看使用记录-使用兑换码充值整体来看，这是一个用于查看**API余额、调用量、Token消耗、模型成本分布和近期请求记录**的账户仪表盘页面。';
+const normalizedDashboard = normalizeAssistantMarkdown(dashboardRaw);
+assert.match(normalizedDashboard, /主要信息如下：\n\n\*\*账户概览\*\*/);
+assert.match(normalizedDashboard, /\n- 当前余额：\*\*\$17\.23\*\*/);
+assert.match(normalizedDashboard, /\n\n\*\*今日使用情况\*\*/);
+assert.match(normalizedDashboard, /\n- `claude-fable-5`：18次请求，630\.1KToken，实际消费 \*\*\$4\.4363\*\*/);
+assert.match(normalizedDashboard, /\n- 最近记录时间为\*\*2026\/07\/0805:52左右\*\*/);
+assert.equal(normalizeAssistantMarkdown('OpenAI-compatible provider keeps hyphen.'), 'OpenAI-compatible provider keeps hyphen.');
+assert.equal(normalizeAssistantMarkdown('`claude-opus-4-8` should stay intact.'), '`claude-opus-4-8` should stay intact.');
+assert.equal(normalizeAssistantMarkdown('A-B测试不应该变列表'), 'A-B测试不应该变列表');
+assert.equal(normalizeAssistantMarkdown('日期 2026-07-08 不变，金额 -$0.5 不变。'), '日期 2026-07-08 不变，金额 -$0.5 不变。');
+assert.equal(normalizeAssistantMarkdown('URL https://example.com/a-b?x=-1 不变'), 'URL https://example.com/a-b?x=-1 不变');
+assert.equal(normalizeAssistantMarkdown('中文-英文混排不应该变列表'), '中文-英文混排不应该变列表');
+assert.equal(normalizeAssistantMarkdown('深度研究-OpenAI模型选择保持。'), '深度研究-OpenAI模型选择保持。');
+assert.equal(normalizeAssistantMarkdown('指标说明：A-B测试、C-D方案不变。'), '指标说明：A-B测试、C-D方案不变。');
+assert.equal(normalizeAssistantMarkdown('参数 page-size 和 max-retries 不变。'), '参数 page-size 和 max-retries 不变。');
+assert.equal(normalizeAssistantMarkdown('中文 - 英文也不应变列表。'), '中文 - 英文也不应变列表。');
+assert.equal(normalizeAssistantMarkdown('- 已经是列表\n- 第二项'), '- 已经是列表\n- 第二项');
+assert.equal(normalizeAssistantMarkdown('```txt\n说明：-不要改代码块\n```'), '```txt\n说明：-不要改代码块\n```');
+assert.equal(normalizeAssistantMarkdown('```txt\n说明：-未闭合代码块也不要改'), '```txt\n说明：-未闭合代码块也不要改');
 
 assert.equal(createIntentPrompt('research', '', [], sidepanelMessages.en.prompts), sidepanelMessages.en.prompts.researchPage);
 assert.equal(createIntentPrompt('compare', 'camera', [], sidepanelMessages.en.prompts), sidepanelMessages.en.prompts.compareTopic('camera'));

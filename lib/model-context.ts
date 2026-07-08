@@ -72,12 +72,15 @@ export function serializeToolEvidenceForContext(event: AgentEvent): string | und
 }
 
 function summaryMessage(text: string): string {
-  return `The conversation history before this point was compacted into the following summary:\n<summary>\n${hideReasoningText(text)}\n</summary>`;
+  return `The conversation history before this point was compacted into the following summary:\n<summary authority="model-generated">\n${hideReasoningText(text)}\n</summary>`;
 }
 
 function taskUserMessage(group: TaskEventGroup, currentTask: boolean): string {
-  const lines = [formatBrowserContext(group.context), `[User request]\n${group.prompt}`];
-  if (!currentTask && group.toolEvidence.length > 0) lines.push(`[Tool evidence]\n${group.toolEvidence.map((line) => `- ${line}`).join('\n')}`);
+  const lines: string[] = [];
+  const contextText = formatBrowserContext(group.context);
+  if (contextText) lines.push(`<browser_context authority="untrusted">\n${contextText}\n</browser_context>`);
+  lines.push(`[User request]\n${group.prompt}`);
+  if (!currentTask && group.toolEvidence.length > 0) lines.push(`<tool_evidence authority="untrusted">\n${group.toolEvidence.map((line) => `- ${line}`).join('\n')}\n</tool_evidence>`);
   if (!currentTask && group.status === 'failed') lines.push(`[Task failed]\n${group.error || 'Task failed.'}`);
   if (!currentTask && group.status === 'cancelled') lines.push('[Task cancelled by user]');
   return lines.filter(Boolean).join('\n\n');

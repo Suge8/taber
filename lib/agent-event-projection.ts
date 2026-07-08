@@ -1,6 +1,8 @@
 import type { AgentEvent } from './db.ts';
 import { domainFromUrl, hideReasoningText, projectToolEvidence } from './agent-event-text.ts';
+import { projectToolTimeline, toolForEvent, type ProjectedToolRun } from './agent-tool-projection.ts';
 export { domainFromUrl, formatPayload, formatRawEvidence, hideReasoningText, projectToolEvidence } from './agent-event-text.ts';
+export type { ProjectedToolRun } from './agent-tool-projection.ts';
 
 const terminalTaskEvents = new Set(['task.completed', 'task.cancelled', 'task.failed']);
 const urlKeyPattern = /(?:^|url$|Url$|URL$|href$|source$|sourceUrl$)/;
@@ -31,23 +33,20 @@ export type ProjectedConversationMessage = {
   taskId?: string;
 };
 
-export type ProjectedToolRun = {
+export type ProjectedReasoningRun = {
   id: string;
-  toolName: string;
-  status: 'running' | 'completed' | 'failed';
+  reasoningId: string;
+  status: 'running' | 'completed';
   createdAt: number;
   updatedAt: number;
   eventId: number;
-  input: unknown;
-  output?: unknown;
-  error?: string;
+  text: string;
   taskId?: string;
-  toolCallId?: string;
-  evidence?: string;
 };
 
 export type ProjectedAssistantTimelinePart =
   | { kind: 'tool'; id: string; createdAt: number; tool: ProjectedToolRun }
+  | { kind: 'reasoning'; id: string; createdAt: number; reasoning: ProjectedReasoningRun }
   | { kind: 'text'; id: string; createdAt: number; message: ProjectedConversationMessage };
 
 export type ProjectedAssistantTimelineTurn = {
@@ -137,6 +136,7 @@ export function projectTaskGroups(events: AgentEvent[], afterEventId = 0): Proje
     }
     if (!current || eventBelongsToOtherTask(event, current.taskId)) continue;
     current.events.push(event);
+    if (event.type === 'task.targetChanged') current.context = readRecord(payload?.tab) ?? current.context;
     const evidence = projectToolEvidence(event);
     if (evidence) current.toolEvidence.push(evidence);
     if (isTerminalEvent(event)) {
@@ -186,31 +186,6 @@ function projectConversation(events: AgentEvent[]): ProjectedConversationMessage
 
   for (const message of messages) message.text = hideReasoningText(message.text);
   return messages.filter((message) => message.text.trim());
-}
-
-function projectToolTimeline(events: AgentEvent[]): ProjectedToolRun[] {
-  const items: ProjectedToolRun[] = [];
-  for (const event of events) {
-    if (!event.type.startsWith('tool.')) continue;
-    const payload = readRecord(event.payload) ?? {};
-    const toolName = readString(payload.toolName) || 'tool';
-    const toolCallId = readString(payload.toolCallId);
-    const taskId = readString(payload.taskId);
-    if (event.type === 'tool.started') {
-      items.push(createToolItem(event, toolName, payload.input, taskId, toolCallId));
-      continue;
-    }
-
-    const item = findToolEvent(items, toolName, toolCallId) ?? createAndPushToolEvent(items, event, toolName, payload.input, taskId, toolCallId);
-    item.status = event.type === 'tool.failed' ? 'failed' : 'completed';
-    item.updatedAt = event.createdAt;
-    item.output = event.type === 'tool.completed' ? payload.output : undefined;
-    item.error = event.type === 'tool.failed' ? hideReasoningText(readString(payload.error) || 'Tool failed.') : undefined;
-    item.evidence = projectToolEvidence(event);
-    item.taskId ??= taskId;
-    item.toolCallId ??= toolCallId;
-  }
-  return items;
 }
 
 function projectTimeline(taskGroups: ProjectedTaskGroup[], messages: ProjectedConversationMessage[], tools: ProjectedToolRun[]): ProjectedTimelineEntry[] {
@@ -292,7 +267,9 @@ function applyTerminal(group: ProjectedTaskGroup, terminal: AgentEvent): void {
 function createTaskAssistantTurn(group: ProjectedTaskGroup, tools: ProjectedToolRun[], usedMessages: Set<string>): ProjectedAssistantTimelineTurn | undefined {
   const parts: ProjectedAssistantTimelinePart[] = [];
   const toolById = new Map(tools.map((tool) => [tool.id, tool]));
+  const reasoningById = new Map<string, ProjectedReasoningRun>();
   const usedTools = new Set<string>();
+  const usedReasoning = new Set<string>();
   let textSegment: { id: string; createdAt: number; text: string } | undefined;
   let segmentIndex = 0;
   let sawAssistantText = false;
@@ -321,6 +298,15 @@ function createTaskAssistantTurn(group: ProjectedTaskGroup, tools: ProjectedTool
       usedMessages.add(readString(payload?.messageId) ?? `event-${event.id}`);
       continue;
     }
+    if (event.type.startsWith('reasoning.')) {
+      const reasoning = reasoningForEvent(event, reasoningById);
+      if (reasoning && !usedReasoning.has(reasoning.id)) {
+        flushText();
+        parts.push({ kind: 'reasoning', id: `reasoning:${reasoning.id}`, createdAt: reasoning.createdAt, reasoning });
+        usedReasoning.add(reasoning.id);
+      }
+      continue;
+    }
     if (event.type.startsWith('tool.')) {
       const tool = toolForEvent(event, toolById);
       if (tool && !usedTools.has(tool.id)) {
@@ -330,6 +316,7 @@ function createTaskAssistantTurn(group: ProjectedTaskGroup, tools: ProjectedTool
       }
       continue;
     }
+    if (event.type === 'task.targetChanged') continue;
     if (event.type === 'task.completed' && !sawAssistantText) {
       appendText(event, group.completedText ?? '');
       usedMessages.add(`event-${event.id}`);
@@ -337,8 +324,14 @@ function createTaskAssistantTurn(group: ProjectedTaskGroup, tools: ProjectedTool
   }
   flushText();
 
+  if (parts.length === 0 && group.status === 'failed') {
+    const createdAt = group.terminal?.createdAt ?? group.started.createdAt;
+    const text = group.error || 'Task failed.';
+    parts.push({ kind: 'text', id: `error:${group.taskId}`, createdAt, message: { id: `error:${group.taskId}`, role: 'assistant', text, createdAt, taskId: group.taskId } });
+  }
+
   if (parts.length === 0) return undefined;
-  const updatedAt = Math.max(...parts.map((part) => part.kind === 'tool' ? part.tool.updatedAt : part.message.createdAt));
+  const updatedAt = Math.max(...parts.map((part) => partUpdatedAt(part)));
   return { id: group.taskId, taskId: group.taskId, status: taskTurnStatus(group, tools), createdAt: parts[0]?.createdAt ?? 0, updatedAt, parts };
 }
 
@@ -349,7 +342,7 @@ function taskTurnStatus(group: ProjectedTaskGroup, tools: ProjectedToolRun[]): P
 }
 
 function createFallbackToolTurn(tool: ProjectedToolRun): ProjectedTimelineEntry {
-  const turn: ProjectedAssistantTimelineTurn = { id: tool.taskId ?? tool.id, taskId: tool.taskId, status: tool.status === 'failed' ? 'failed' : tool.status === 'running' ? 'running' : 'completed', createdAt: tool.createdAt, updatedAt: tool.updatedAt, parts: [{ kind: 'tool', id: `tool:${tool.id}`, createdAt: tool.createdAt, tool }] };
+  const turn: ProjectedAssistantTimelineTurn = { id: tool.taskId ?? tool.id, taskId: tool.taskId, status: tool.status === 'failed' ? 'failed' : tool.status === 'pending' || tool.status === 'running' ? 'running' : 'completed', createdAt: tool.createdAt, updatedAt: tool.updatedAt, parts: [{ kind: 'tool', id: `tool:${tool.id}`, createdAt: tool.createdAt, tool }] };
   return { kind: 'assistantTurn', id: `a:${turn.id}`, createdAt: turn.createdAt, turn };
 }
 
@@ -381,24 +374,26 @@ function upsertStreamingMessage(
   if (taskId && text) streamedTaskIds.add(taskId);
 }
 
-function toolForEvent(event: AgentEvent, tools: Map<string, ProjectedToolRun>): ProjectedToolRun | undefined {
-  const toolCallId = readString(readRecord(event.payload)?.toolCallId);
-  return tools.get(toolCallId ? `tool-${toolCallId}` : `event-${event.id}`);
+function partUpdatedAt(part: ProjectedAssistantTimelinePart) {
+  if (part.kind === 'tool') return part.tool.updatedAt;
+  if (part.kind === 'reasoning') return part.reasoning.updatedAt;
+  return part.createdAt;
 }
 
-function findToolEvent(items: ProjectedToolRun[], toolName: string, toolCallId: string | undefined): ProjectedToolRun | undefined {
-  if (toolCallId) return items.findLast((item) => item.toolCallId === toolCallId);
-  return items.findLast((item) => item.toolName === toolName && item.status === 'running');
-}
-
-function createAndPushToolEvent(items: ProjectedToolRun[], event: AgentEvent, toolName: string, input: unknown, taskId?: string, toolCallId?: string): ProjectedToolRun {
-  const item = createToolItem(event, toolName, input, taskId, toolCallId);
-  items.push(item);
+function reasoningForEvent(event: AgentEvent, items: Map<string, ProjectedReasoningRun>): ProjectedReasoningRun | undefined {
+  const payload = readRecord(event.payload) ?? {};
+  const reasoningId = readString(payload.reasoningId);
+  if (!reasoningId) return undefined;
+  const id = `reasoning-${reasoningId}`;
+  let item = items.get(id);
+  if (!item) {
+    item = { id, reasoningId, status: 'running', createdAt: event.createdAt, updatedAt: event.createdAt, eventId: event.id, text: '', taskId: readString(payload.taskId) };
+    items.set(id, item);
+  }
+  item.updatedAt = event.createdAt;
+  if (event.type === 'reasoning.appended') item.text += hideReasoningText(readString(payload.delta) ?? '');
+  if (event.type === 'reasoning.completed') item.status = 'completed';
   return item;
-}
-
-function createToolItem(event: AgentEvent, toolName: string, input: unknown, taskId?: string, toolCallId?: string): ProjectedToolRun {
-  return { id: toolCallId ? `tool-${toolCallId}` : `event-${event.id}`, toolName, status: 'running', createdAt: event.createdAt, updatedAt: event.createdAt, eventId: event.id, input, taskId, toolCallId };
 }
 
 function collectUrls(sources: Map<string, ProjectedSource>, value: unknown, fallbackText: string | undefined): void {

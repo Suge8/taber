@@ -8,6 +8,7 @@ import {
   type AgentEventProjection,
   type ProjectedAssistantTimelineTurn,
   type ProjectedConversationMessage,
+  type ProjectedReasoningRun,
   type ProjectedSource,
   type ProjectedTimelineEntry,
   type ProjectedToolRun,
@@ -58,8 +59,11 @@ export type QuickActionPromptSet = {
   compareTabsTopic: (topic: string, tabs: string) => string;
 };
 
+export type ReasoningTimelineItem = ProjectedReasoningRun;
+
 export type AssistantTimelinePart =
   | { kind: 'tool'; id: string; createdAt: number; tool: ToolTimelineItem }
+  | { kind: 'reasoning'; id: string; createdAt: number; reasoning: ReasoningTimelineItem }
   | { kind: 'text'; id: string; createdAt: number; message: ConversationMessage };
 
 export type AssistantTimelineTurn = Omit<ProjectedAssistantTimelineTurn, 'parts'> & {
@@ -117,14 +121,12 @@ export function sourcesFromProjection(
   labels = { currentTab: 'Current tab', tool: 'Tool' },
   context?: Record<string, unknown>,
 ): SourceLink[] {
-  return mergedSources(projection, context).map((source) => ({
-    label: source.label || source.fallbackText || labels[source.fallbackLabel],
-    url: source.url,
-    domain: source.domain,
-    faviconUrl: source.faviconUrl,
-    tabId: source.tabId,
-    windowId: source.windowId,
-  }));
+  return mergedSources(projection, context).map((source) => sourceLinkFromProjection(source, labels));
+}
+
+export function controlledTargetFromContext(context: Record<string, unknown> | undefined, labels: { currentTab: string; tool: string; controlledPage?: string } = { currentTab: 'Controlled page', tool: 'Tool' }): SourceLink | undefined {
+  const source = sourceFromBrowserContext(context);
+  return source ? sourceLinkFromProjection(source, { currentTab: labels.controlledPage ?? labels.currentTab, tool: labels.tool }) : undefined;
 }
 
 export function deriveSources(
@@ -197,11 +199,16 @@ function timelineEntryFromProjection(entry: ProjectedTimelineEntry, toolsById: M
     createdAt: entry.createdAt,
     turn: {
       ...entry.turn,
-      parts: entry.turn.parts.map((part) => part.kind === 'text'
-        ? part
-        : { kind: 'tool' as const, id: part.id, createdAt: part.createdAt, tool: toolsById.get(part.tool.id) ?? toolTimelineItemFromProjection(part.tool) }),
+      parts: entry.turn.parts.map((part): AssistantTimelinePart => {
+        if (part.kind === 'text' || part.kind === 'reasoning') return part;
+        return { kind: 'tool', id: part.id, createdAt: part.createdAt, tool: toolsById.get(part.tool.id) ?? toolTimelineItemFromProjection(part.tool) };
+      }),
     },
   };
+}
+
+function sourceLinkFromProjection(source: ProjectedSource, labels: { currentTab: string; tool: string }): SourceLink {
+  return { label: source.label || source.fallbackText || labels[source.fallbackLabel], url: source.url, domain: source.domain, faviconUrl: source.faviconUrl, tabId: source.tabId, windowId: source.windowId };
 }
 
 function mergedSources(projection: AgentEventProjection, context: Record<string, unknown> | undefined): ProjectedSource[] {

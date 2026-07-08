@@ -2,7 +2,7 @@ import type { AgentEvent } from './db.ts';
 
 const TOOL_DIGEST_MAX_CHARS = 2000;
 const LONG_TEXT_MAX_CHARS = 1200;
-const OBSERVE_WARNING = 'Element indexes/stable IDs are historical; re-observe or query the current page before interacting.';
+const OBSERVE_WARNING = 'Element indexes are scoped to one browserRepl call; do not reuse them later.';
 const reasoningLabelPattern = '(?:cot|thoughts?|chain[-_\\s]*of[-_\\s]*thought|raw[-_\\s]*reasoning|reasoning|thinking)';
 const hiddenKeyPattern = new RegExp(`(?:^|[-_\\s])${reasoningLabelPattern}(?:$|[-_\\s])`, 'i');
 const summaryKeyPattern = /summary/i;
@@ -15,11 +15,12 @@ export function projectToolEvidence(event: AgentEvent): string | undefined {
   const input = readRecord(payload.input) ?? {};
   const outputRecord = readRecord(payload.output);
   const output = outputRecord ?? payload.output;
+  if (toolName === 'browser') return truncate(browserDigest(input, output), TOOL_DIGEST_MAX_CHARS);
+  if (toolName === 'browserRepl') return truncate(browserReplDigest(input, output), TOOL_DIGEST_MAX_CHARS);
   if (outputRecord?.ok === false) return truncate(recoverableResultDigest(toolName, outputRecord), TOOL_DIGEST_MAX_CHARS);
-  if (toolName === 'navigate') return truncate(`navigate: ${fields({ action: input.action, url: readDeepString(output, ['url']) ?? input.url, title: readDeepString(output, ['title']), tabId: readDeepNumber(output, ['tabId', 'id']) })}`, TOOL_DIGEST_MAX_CHARS);
+  if (toolName === 'navigate') return truncate(navigateDigest(input, output), TOOL_DIGEST_MAX_CHARS);
   if (toolName === 'getDocument') return truncate(`getDocument: ${fields({ title: readDeepString(output, ['title']), url: readDeepString(output, ['url']), source: readDeepString(output, ['source']) ?? input.source, mode: readDeepString(output, ['mode']) ?? input.mode, contentChars: readDeepNumber(output, ['contentChars']), truncated: readDeepValue(output, ['truncated']) === true ? true : undefined, headings: summarizeArray(readDeepValue(output, ['headings'])), tables: summarizeTables(readDeepValue(output, ['tables'])), excerpt: excerpt(readDeepString(output, ['content'])) })}`, TOOL_DIGEST_MAX_CHARS);
   if (toolName === 'extractImage') return truncate(`extractImage: ${fields({ source: readDeepString(output, ['source']) ?? input.source, selector: input.selector ?? readDeepString(output, ['selector']), url: readDeepString(output, ['url']), width: readDeepNumber(output, ['width']), height: readDeepNumber(output, ['height']), alt: readDeepString(output, ['alt']) })}`, TOOL_DIGEST_MAX_CHARS);
-  if (toolName === 'browserRepl') return truncate(`browserRepl.${readString(input.helper) ?? 'run'}: ${safeSnippet(output)}${isObserve(input) ? ` ${OBSERVE_WARNING}` : ''}`, TOOL_DIGEST_MAX_CHARS);
   if (toolName === 'debugger') return truncate(`debugger: ${safeSnippet(output)}`, TOOL_DIGEST_MAX_CHARS);
   return truncate(`${toolName}: ${safeSnippet(output)}`, TOOL_DIGEST_MAX_CHARS);
 }
@@ -84,6 +85,126 @@ function fields(values: Record<string, unknown>): string {
 
 function recoverableResultDigest(toolName: string, output: Record<string, unknown>): string {
   return `${toolName}: ${fields({ ok: false, code: safeString(output.code), message: safeString(output.message), retryHint: safeString(output.retryHint) })}`;
+}
+
+function browserDigest(input: Record<string, unknown>, output: unknown): string {
+  const record = readRecord(output) ?? {};
+  const state = readRecord(record.state);
+  const evidence = readRecord(record.evidence);
+  const element = readRecord(evidence?.element);
+  return `browser: ${fields({ action: safeString(input.action) ?? safeString(record.action), ok: record.ok, code: safeString(record.code), message: safeString(record.message), target: summarizeBrowserTarget(input.target), element: safeString(element?.name) ?? safeString(element?.text) ?? safeString(element?.selector), url: safeString(state?.url) })}`;
+}
+
+function summarizeBrowserTarget(value: unknown): string | undefined {
+  const target = readRecord(value);
+  if (!target) return undefined;
+  if (target.text) return `text=${safeString(target.text)}`;
+  if (target.label) return `label=${safeString(target.label)}`;
+  if (target.selector) return `selector=${safeString(target.selector)}`;
+  if (target.role || target.name) return `role=${safeString(target.role)}, name=${safeString(target.name)}`;
+  if (target.ref) return 'ref';
+  return undefined;
+}
+
+function navigateDigest(input: Record<string, unknown>, output: unknown): string {
+  const outputRecord = readRecord(output);
+  if (outputRecord?.action === 'listTabs') return summarizeNavigateResult(outputRecord) ?? 'navigate: action=listTabs, tabs=0';
+  return `navigate: ${fields({ action: safeString(input.action) ?? readDeepString(output, ['action']), url: readDeepString(output, ['url']) ?? input.url, title: readDeepString(output, ['title']), tabId: readDeepNumber(output, ['tabId', 'id']) })}`;
+}
+
+function browserReplDigest(input: Record<string, unknown>, output: unknown): string {
+  const outputRecord = readRecord(output);
+  const value = outputRecord && 'value' in outputRecord ? outputRecord.value : output;
+  const consoleEntries = readDeepValue(output, ['console']);
+  const consoleCount = Array.isArray(consoleEntries) && consoleEntries.length ? ` browserjsConsole=${consoleEntries.length}` : '';
+  const warning = isObserve(input) || hasElementIndexes(value) ? ` ${OBSERVE_WARNING}` : '';
+  return `browserRepl: ${summarizeBrowserReplValue(value) ?? safeSnippet(value)}${consoleCount}${warning}`;
+}
+
+function summarizeBrowserReplValue(value: unknown, depth = 0): string | undefined {
+  return summarizeNavigateResult(value) ?? summarizeBatchResult(value) ?? summarizeFillFormResult(value) ?? summarizeObservedElements(value) ?? summarizeErrorResult(value) ?? summarizeNestedBrowserReplValue(value, depth);
+}
+
+function summarizeNestedBrowserReplValue(value: unknown, depth: number): string | undefined {
+  if (depth > 2 || !value || typeof value !== 'object') return undefined;
+  const entries = Array.isArray(value)
+    ? value.slice(0, 5).map((item, index) => [`${index}`, item] as const)
+    : Object.entries(value).slice(0, 8);
+  const parts = entries.map(([key, item]) => {
+    const summary = summarizeBrowserReplValue(item, depth + 1);
+    return summary ? `${key}=${summary}` : undefined;
+  }).filter((item) => item !== undefined);
+  return parts.length ? parts.join('; ') : undefined;
+}
+
+function summarizeNavigateResult(value: unknown): string | undefined {
+  const record = readRecord(value);
+  if (!record || typeof record.action !== 'string' || !['open', 'back', 'forward', 'reload', 'listTabs', 'switchTab', 'closeTab', 'currentTab'].includes(record.action)) return undefined;
+  if (record.action === 'listTabs') {
+    const tabs = Array.isArray(record.tabs) ? record.tabs : [];
+    return `navigate: ${fields({ action: record.action, tabs: tabs.length, items: summarizeNavigateTabs(tabs) })}`;
+  }
+  return `navigate: ${fields({ action: record.action, url: readDeepString(record, ['url']), title: readDeepString(record, ['title']), tabId: readDeepNumber(record, ['tabId', 'id']) })}`;
+}
+
+function summarizeNavigateTabs(tabs: unknown[]): string | undefined {
+  if (!tabs.length) return undefined;
+  return tabs.slice(0, 5).map((tab) => {
+    const record = readRecord(tab) ?? {};
+    return fields({ tabId: readDeepNumber(record, ['tabId', 'id']), title: safeString(record.title), url: safeString(record.url) });
+  }).join(' | ');
+}
+
+function summarizeBatchResult(value: unknown): string | undefined {
+  const record = readRecord(value);
+  if (!record || !Array.isArray(record.steps)) return undefined;
+  return `batch: ${fields({ ok: record.ok, steps: record.steps.length, detail: summarizeBatchSteps(record.steps), code: safeString(record.code), message: safeString(record.message), error: safeString(record.error) })}`;
+}
+
+function summarizeBatchSteps(steps: unknown[]): string {
+  return steps.slice(0, 6).map((step, index) => {
+    const record = readRecord(step) ?? {};
+    return fields({ n: index + 1, action: record.action ?? record.type, selector: record.selector ?? readDeepString(record.target, ['selector']), ok: record.ok, matched: record.matched === true ? true : undefined, code: safeString(record.code), message: safeString(record.message), error: safeString(record.error) });
+  }).join(' | ');
+}
+
+function summarizeFillFormResult(value: unknown): string | undefined {
+  const record = readRecord(value);
+  if (!record || (!Array.isArray(record.filled) && !Array.isArray(record.missing) && !Array.isArray(record.ambiguous))) return undefined;
+  return `fillForm: ${fields({ ok: record.ok, filled: summarizeFields(record.filled), missing: summarizeFields(record.missing), ambiguous: summarizeFields(record.ambiguous), code: safeString(record.code), message: safeString(record.message), error: safeString(record.error) })}`;
+}
+
+function summarizeFields(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value.slice(0, 6).map((item) => {
+    const record = readRecord(item);
+    return safeString(record?.field) ?? safeString(record?.label) ?? safeString(item);
+  }).filter((name) => name !== undefined);
+  return `${value.length}${names.length ? ` (${names.join(' | ')})` : ''}`;
+}
+
+function summarizeObservedElements(value: unknown): string | undefined {
+  const record = readRecord(value);
+  if (!record || !Array.isArray(record.elements)) return undefined;
+  const names = record.elements.slice(0, 6).map((item) => {
+    const element = readRecord(item);
+    return safeString(element?.name) ?? safeString(element?.text) ?? safeString(element?.role);
+  }).filter((name) => name !== undefined);
+  return `elements: ${fields({ count: record.elements.length, names: names.length ? names.join(' | ') : undefined })}`;
+}
+
+function summarizeErrorResult(value: unknown): string | undefined {
+  const record = readRecord(value);
+  if (!record || (record.code === undefined && record.message === undefined && record.error === undefined)) return undefined;
+  return `error: ${fields({ code: safeString(record.code), message: safeString(record.message), error: safeString(record.error) })}`;
+}
+
+function hasElementIndexes(value: unknown, depth = 0): boolean {
+  if (depth > 3 || !value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some((item) => hasElementIndexes(item, depth + 1));
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.elements) && record.elements.some((item) => Number.isInteger(readRecord(item)?.index))) return true;
+  return Object.values(record).some((item) => hasElementIndexes(item, depth + 1));
 }
 
 function safeSnippet(value: unknown): string {
