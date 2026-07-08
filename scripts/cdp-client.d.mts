@@ -1,5 +1,6 @@
 export type CdpClient = {
   send(method: string, params?: Record<string, unknown>): Promise<any>;
+  on(method: string, listener: (params: any) => void): () => void;
   close(): void;
 };
 

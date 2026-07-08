@@ -20,6 +20,7 @@ export async function connectCdp(webSocketUrl) {
 
   const socket = new WebSocket(webSocketUrl);
   const pending = new Map();
+  const listeners = new Map();
   let nextId = 1;
   let closed = false;
 
@@ -49,7 +50,11 @@ export async function connectCdp(webSocketUrl) {
   socket.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
     const request = pending.get(message.id);
-    if (!request) return;
+    if (!request) {
+      const methodListeners = listeners.get(message.method);
+      if (methodListeners) for (const listener of [...methodListeners]) listener(message.params ?? {});
+      return;
+    }
     pending.delete(message.id);
     if (message.error) request.reject(new Error(message.error.message));
     else request.resolve(message.result);
@@ -70,6 +75,15 @@ export async function connectCdp(webSocketUrl) {
           reject(error);
         }
       });
+    },
+    on(method, listener) {
+      const methodListeners = listeners.get(method) ?? new Set();
+      methodListeners.add(listener);
+      listeners.set(method, methodListeners);
+      return () => {
+        methodListeners.delete(listener);
+        if (methodListeners.size === 0) listeners.delete(method);
+      };
     },
     close() {
       rejectPending(new Error('CDP websocket closed by client'));

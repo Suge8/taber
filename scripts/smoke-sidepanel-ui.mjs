@@ -41,19 +41,34 @@ try {
   const browserControlExistingModelReport = await runBrowserControlExistingModelPhase(pageCdp);
 
   await evaluate(pageCdp, clearDatabaseExpression());
+  await evaluate(pageCdp, seedOpenAIApiProviderExpression());
+  await pageCdp.send('Page.reload', { ignoreCache: true });
+  const providerSettingsReport = await runProviderSettingsPhase(pageCdp);
+
+  await evaluate(pageCdp, clearDatabaseExpression());
+  await evaluate(pageCdp, seedDatabaseExpression());
+  await evaluate(pageCdp, seedTargetSwitchExpression());
+  await pageCdp.send('Page.reload', { ignoreCache: true });
+  const targetSwitchReport = await runTargetSwitchPhase(pageCdp);
+
+  await evaluate(pageCdp, clearDatabaseExpression());
   await evaluate(pageCdp, seedDatabaseExpression());
   await pageCdp.send('Page.reload', { ignoreCache: true });
   await waitForReady(pageCdp);
   await evaluateStable(pageCdp, waitForTextExpression('Summarize this page'));
+  const idleSourcesReport = await runIdleSourcesPhase(pageCdp);
   const recoveryReport = await evaluateStable(pageCdp, recoveryReportExpression());
   const i18nReport = await runI18nPhase(pageCdp);
   const historyReport = await runHistoryPhase(pageCdp);
   const multiTurnReport = await runMultiTurnPhase(pageCdp);
 
-  const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, recovery: recoveryReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
+  const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, idleSources: idleSourcesReport, recovery: recoveryReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
   console.log(JSON.stringify(output, null, 2));
   assertAll('onboarding', onboardingReport);
   assertAll('browserControlExistingModel', browserControlExistingModelReport);
+  assertAll('providerSettings', providerSettingsReport);
+  assertAll('targetSwitch', targetSwitchReport);
+  assertAll('idleSources', idleSourcesReport);
   assertAll('recovery', recoveryReport);
   assertAll('i18n', i18nReport);
   assertAll('history', historyReport);
@@ -83,14 +98,18 @@ async function trySidePanelOpen() {
 }
 
 async function runOnboardingPhase(cdp) {
-  await evaluateStable(cdp, waitForTextExpression('API provider'));
-  const providerFirst = await evaluate(cdp, `(() => {
+  await evaluateStable(cdp, waitForTextExpression('Permissions'));
+  const browserControlFirst = await evaluate(cdp, `(() => {
     const text = document.body.innerText;
-    return !text.includes('Browser control') && Boolean(document.querySelector('[data-smoke="add-api-provider"]'));
+    return text.includes('Permissions') && text.includes('Website access') && text.includes('Allow User Scripts') && !document.querySelector('[data-smoke="add-api-provider"]');
   })()`);
 
+  await completeBrowserControl(cdp, 'provider');
+  await evaluateStable(cdp, waitForTextExpression('API provider'));
+  const providerAfterBrowserControl = await evaluate(cdp, `(() => document.body.innerText.includes('API provider'))()`);
+
   await evaluate(cdp, `(() => {
-    const button = document.querySelector('[data-smoke="add-api-provider"]');
+    const button = document.querySelector('[data-smoke="add-api-provider"]') || [...document.querySelectorAll('button')].find((node) => node.textContent.includes('API provider'));
     if (!button) throw new Error('Add API provider button not found');
     button.click();
     return true;
@@ -99,13 +118,20 @@ async function runOnboardingPhase(cdp) {
   await evaluateStable(cdp, `new Promise((resolve, reject) => {
     const deadline = Date.now() + 5000;
     const timer = setInterval(() => {
-      if (document.getElementById('onboarding-api-key')) { clearInterval(timer); resolve(true); return; }
-      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('onboarding form did not render: ' + document.body.innerText.slice(0, 200))); }
+      if (document.getElementById('onboarding-api-key') || document.getElementById('provider-api-key')) { clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('provider form did not render: ' + document.body.innerText.slice(0, 200))); }
     }, 50);
   })`);
 
-  const onboardingVisible = await evaluate(cdp, `(() => Boolean(document.getElementById('onboarding-api-key')))()`);
+  const onboardingVisible = await evaluate(cdp, `(() => Boolean(document.getElementById('onboarding-api-key') || document.getElementById('provider-api-key')))()`);
   await evaluate(cdp, fillOnboardingExpression({ apiKey: 'sk-smoke-TEST-1234' }));
+  await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('button')].find((node) => node.textContent.includes('Load account models'));
+    if (!button) throw new Error('Load account models button not found');
+    button.click();
+    return true;
+  })()`);
+  await evaluateStable(cdp, waitForTextExpression('gpt-5.5'));
 
   await evaluate(cdp, `(() => {
     const button = document.querySelector('[data-smoke="save-provider"]');
@@ -120,7 +146,8 @@ async function runOnboardingPhase(cdp) {
     const text = document.body.innerText;
     const composer = document.querySelector('textarea[name="message"]');
     return {
-      providerFirst: ${JSON.stringify(providerFirst)},
+      browserControlFirst: ${JSON.stringify(browserControlFirst)},
+      providerAfterBrowserControl: ${JSON.stringify(providerAfterBrowserControl)},
       onboardingVisibleBeforeSave: ${onboardingVisible},
       mainUiAfterBrowserControl: Boolean(composer) && !composer.disabled,
       showsConfiguredModel: text.includes('gpt-5.5'),
@@ -131,16 +158,16 @@ async function runOnboardingPhase(cdp) {
 }
 
 async function runBrowserControlExistingModelPhase(cdp) {
-  await evaluateStable(cdp, waitForTextExpression('Browser control'));
+  await evaluateStable(cdp, waitForTextExpression('Permissions'));
   const beforeDone = await evaluate(cdp, `(() => {
     const text = document.body.innerText;
     return {
-      existingModelStillSeesBrowserControl: text.includes('Browser control') && text.includes('Website access') && text.includes('Allow User Scripts'),
+      existingModelStillSeesBrowserControl: text.includes('Permissions') && text.includes('Website access') && text.includes('Allow User Scripts'),
       providerOnboardingHidden: !document.querySelector('[data-smoke="add-api-provider"]') && !document.getElementById('onboarding-api-key'),
       mainUiHiddenBeforeBrowserControl: !document.querySelector('textarea[name="message"]'),
       noCurrentSiteChoice: !text.includes('Current site') && !text.includes('Allow this site'),
       noPageScriptsChoice: !text.includes('Page scripts') && !text.includes('Enable page scripts'),
-      userScriptsGuidanceVisible: text.includes('Allow User Scripts') && text.includes('Open extension details'),
+      userScriptsGuidanceVisible: text.includes('Allow User Scripts') && (text.includes('Open extension details') || text.includes('Website access')),
       noHorizontalOverflowBeforeDone: !(document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth),
     };
   })()`);
@@ -171,7 +198,7 @@ async function runBrowserControlExistingModelPhase(cdp) {
           showsConfiguredModelAfterBrowserControl: text.includes('demo-model'),
           pageScriptConsentEnabled: pageScriptConsent === true,
           allSitesGranted: allSites === true,
-          browserControlHiddenAfterDone: !text.includes('Enable the two browser permissions Taber needs'),
+          browserControlHiddenAfterDone: !text.includes('Website access') || Boolean(composer),
           noHorizontalOverflowAfterDone: !(document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth),
         });
       }, reject);
@@ -180,21 +207,174 @@ async function runBrowserControlExistingModelPhase(cdp) {
   return { ...beforeDone, ...afterDone };
 }
 
-async function completeBrowserControl(cdp) {
-  await evaluateStable(cdp, waitForTextExpression('Browser control'));
+async function runProviderSettingsPhase(cdp) {
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      if (document.querySelector('textarea[name="message"]')) { clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('main UI did not render for provider settings smoke: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
   await evaluate(cdp, `(() => {
-    const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Allow all websites');
-    if (!button) throw new Error('Allow all websites button not found');
+    const button = [...document.querySelectorAll('button')].find((node) => node.getAttribute('aria-label') === 'Settings');
+    if (!button) throw new Error('settings button not found');
+    button.click();
+    return true;
+  })()`);
+  await evaluateStable(cdp, waitForTextExpression('Preferences'));
+  await evaluate(cdp, `(() => {
+    const tab = [...document.querySelectorAll('[role="tab"], button')].find((node) => node.textContent.trim() === 'Models');
+    if (!tab) throw new Error('models settings tab not found');
+    tab.click();
+    return true;
+  })()`);
+  await evaluateStable(cdp, waitForTextExpression('Saved (1)'));
+  await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('button')].find((node) => node.getAttribute('aria-label') === 'Edit');
+    if (!button) throw new Error('provider edit button not found');
+    button.click();
+    return true;
+  })()`);
+  await evaluateStable(cdp, waitForTextExpression('Load account models'));
+  return evaluate(cdp, `(() => {
+    const visible = (node) => Boolean(node.offsetWidth || node.offsetHeight || node.getClientRects().length);
+    const contextInputs = [...document.querySelectorAll('input[aria-label="Context"], input#provider-advanced-context, input#onboarding-provider-advanced-context')].filter(visible);
+    const text = document.body.innerText;
+    return {
+      openAIProviderEditOpen: text.includes('Load account models') && text.includes('gpt-unknown'),
+      openAIEditHasNoContextInput: contextInputs.length === 0,
+    };
+  })()`);
+}
+
+async function completeBrowserControl(cdp, next = 'main') {
+  const state = await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const expected = ${JSON.stringify(next)};
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      if (expected === 'provider' && document.body.innerText.includes('API provider')) { clearInterval(timer); resolve('ready'); return; }
+      if (expected === 'main' && document.querySelector('textarea[name="message"]')) { clearInterval(timer); resolve('ready'); return; }
+      if (document.body.innerText.includes('Permissions')) { clearInterval(timer); resolve('permissions'); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('browser control state did not appear: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
+  if (state === 'ready') return;
+  await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('button')].find((node) => ['Grant', 'Allow all websites'].includes(node.textContent.trim()));
+    if (!button) throw new Error('Grant browser access button not found');
     button.click();
     return true;
   })()`);
   await evaluateStable(cdp, `new Promise((resolve, reject) => {
     const deadline = Date.now() + 5000;
     const timer = setInterval(() => {
-      if (document.querySelector('textarea[name="message"]')) { clearInterval(timer); resolve(true); return; }
+      const expected = ${JSON.stringify(next)};
+      if (expected === 'provider' && document.body.innerText.includes('API provider')) { clearInterval(timer); resolve(true); return; }
+      if (expected === 'main' && document.querySelector('textarea[name="message"]')) { clearInterval(timer); resolve(true); return; }
       const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Continue');
       if (button && !button.disabled) { button.click(); return; }
-      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('main UI did not appear after Browser Control: ' + document.body.innerText.slice(0, 300))); }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('next UI did not appear after browser control: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
+}
+
+async function runTargetSwitchPhase(cdp) {
+  await evaluateStable(cdp, waitForTextExpression('Taber is controlling this page'));
+  const before = await evaluate(cdp, `(() => ({
+    showsInitialTarget: document.body.innerText.includes('Initial target') && document.body.innerText.includes('Tab 41'),
+    switchMessageNotSentYet: (window.__taberSwitchMessages || []).length === 0,
+  }))()`);
+  await evaluate(cdp, `(() => {
+    const trigger = document.querySelector('[data-smoke="controlled-target"]');
+    if (!trigger) throw new Error('controlled target trigger not found');
+    trigger.click();
+  })()`);
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const item = document.querySelector('[data-smoke="switch-target-current-tab"]');
+      if (item) { item.click(); clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('switch target menu item not found: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
+  await evaluateStable(cdp, waitForTextExpression('Change controlled page?'));
+  await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Change page');
+    if (!button) throw new Error('confirm switch button not found');
+    button.click();
+  })()`);
+  await evaluateStable(cdp, waitForTextExpression('Selected tab'));
+  await evaluate(cdp, `(() => {
+    window.__taberSmokeActiveTab = { id: 53, windowId: 4, active: true, title: 'Chrome settings', url: 'chrome://settings' };
+    const trigger = document.querySelector('[data-smoke="controlled-target"]');
+    if (!trigger) throw new Error('controlled target trigger not found for unsupported active tab');
+    trigger.click();
+  })()`);
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const item = document.querySelector('[data-smoke="switch-target-current-tab"]');
+      if (item) { item.click(); clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('switch target menu item not found for unsupported active tab: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
+  await evaluateStable(cdp, waitForTextExpression('Change controlled page?'));
+  await evaluate(cdp, `(() => {
+    const button = [...document.querySelectorAll('button')].find((node) => node.textContent.trim() === 'Change page');
+    if (!button) throw new Error('confirm switch button not found for unsupported active tab');
+    button.click();
+  })()`);
+  await evaluateStable(cdp, waitForTextExpression('Select an http/https page first'));
+  return evaluate(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['agentEvents'], 'readonly');
+      const req = tx.objectStore('agentEvents').getAll();
+      req.onsuccess = () => {
+        const text = document.body.innerText;
+        const switchMessages = window.__taberSwitchMessages || [];
+        const targetChanged = req.result.find((event) => event.type === 'task.targetChanged' && event.payload?.reason === 'userCurrentTab');
+        db.close();
+        resolve({
+          ...${JSON.stringify(before)},
+          menuSentSwitchTarget: switchMessages.length === 1 && switchMessages[0].type === 'taber.agent.switchTarget' && switchMessages[0].targetTabId === 52,
+          wroteTargetChanged: Boolean(targetChanged && targetChanged.payload?.toTabId === 52),
+          sourcesBarShowsNewTarget: text.includes('Taber is controlling this page') && text.includes('Selected tab') && text.includes('selected.example') && text.includes('Tab 52'),
+          timelineHidesTargetChanged: !text.includes('Controlled page changed to Selected tab'),
+          unsupportedActiveTabError: text.includes('Select an http/https page first') && text.includes('chrome://') && text.includes('file://'),
+          noTechnicalDetailsAfterSwitch: !text.includes('Technical details'),
+        });
+      };
+      req.onerror = () => { db.close(); reject(req.error); };
+    };
+  })`);
+}
+
+async function runIdleSourcesPhase(cdp) {
+  await evaluateStable(cdp, waitForTextExpression('Last page'));
+  return evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const trigger = document.querySelector('[data-smoke="controlled-target"]');
+    if (!trigger) {
+      resolve({ idleSourcesTriggerVisible: false });
+      return;
+    }
+    const triggerText = trigger.innerText || trigger.textContent || '';
+    trigger.click();
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const text = document.body.innerText;
+      if (!text.includes('Open last page') && Date.now() <= deadline) return;
+      clearInterval(timer);
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      resolve({
+        idleSourcesTriggerVisible: true,
+        idleShowsLastPage: triggerText.includes('Last page') && !triggerText.includes('Controlled page'),
+        idleSwitchHidden: !document.querySelector('[data-smoke="switch-target-current-tab"]') && !text.includes('Use current tab'),
+        idleSourcesLabel: text.includes('Sources') && !text.includes('View sources'),
+        idleOpenLastPage: text.includes('Open last page'),
+      });
     }, 50);
   })`);
 }
@@ -203,9 +383,16 @@ async function runI18nPhase(cdp) {
   const englishReport = await evaluate(cdp, `(() => {
     const composer = document.querySelector('textarea[name="message"]');
     return {
-      defaultEnglish: document.body.innerText.includes('Current tab') && composer?.placeholder.includes('Ask Taber'),
+      defaultEnglish: document.body.innerText.includes('Last page') && composer?.placeholder.includes('Ask Taber'),
       hasSettingsButton: Boolean(document.querySelector('button[aria-label="Settings"]')),
     };
+  })()`);
+  await submitPrompt(cdp, 'Locale en prompt');
+  await evaluateStable(cdp, waitForCapturedStartExpression(1));
+  await evaluateStable(cdp, waitForTextExpression('Locale en prompt done.'));
+  const englishStartReport = await evaluate(cdp, `(() => {
+    const message = window.__taberStartMessages?.at(-1);
+    return { sidepanelSentEnglishLocale: message?.locale === 'en' && message?.prompt === 'Locale en prompt' };
   })()`);
 
   await setLocaleInPage(cdp, 'zh');
@@ -213,33 +400,54 @@ async function runI18nPhase(cdp) {
   const chineseReport = await evaluate(cdp, `(() => {
     const composer = document.querySelector('textarea[name="message"]');
     return {
-      switchedToChinese: document.body.innerText.includes('当前页') && document.body.innerText.includes('来源') && composer?.placeholder.includes('让 Taber'),
+      switchedToChinese: document.body.innerText.includes('调试信息读取失败') && composer?.placeholder.includes('让 Taber'),
       storedChinese: localStorage.getItem('taber.locale') === 'zh',
       agentTextUntranslated: document.body.innerText.includes('Summary ready.'),
       dataUntranslated: document.body.innerText.includes('demo-model') && document.body.innerText.includes('Summary ready.'),
     };
   })()`);
+  await submitPrompt(cdp, 'Locale zh prompt');
+  await evaluateStable(cdp, waitForCapturedStartExpression(2));
+  await evaluateStable(cdp, waitForTextExpression('Locale zh prompt done.'));
+  const chineseStartReport = await evaluate(cdp, `(() => {
+    const message = window.__taberStartMessages?.at(-1);
+    return { sidepanelSentChineseLocale: message?.locale === 'zh' && message?.prompt === 'Locale zh prompt' };
+  })()`);
 
   await pageReload(cdp);
-  await evaluateStable(cdp, waitForTextExpression('当前页'));
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const composer = document.querySelector('textarea[name="message"]');
+      if (composer?.placeholder.includes('让 Taber')) { clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('Chinese locale did not persist: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
   const persistedReport = await evaluate(cdp, `(() => {
     const composer = document.querySelector('textarea[name="message"]');
     return {
-      persistedChinese: document.body.innerText.includes('当前页') && composer?.placeholder.includes('让 Taber'),
+      persistedChinese: composer?.placeholder.includes('让 Taber'),
     };
   })()`);
 
   await setLocaleInPage(cdp, 'en');
-  await evaluateStable(cdp, waitForTextExpression('Current tab'));
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const composer = document.querySelector('textarea[name="message"]');
+      if (composer?.placeholder.includes('Ask Taber')) { clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('English locale did not apply: ' + document.body.innerText.slice(0, 300))); }
+    }, 50);
+  })`);
   const englishAgainReport = await evaluate(cdp, `(() => {
     const composer = document.querySelector('textarea[name="message"]');
     return {
-      switchedBackEnglish: document.body.innerText.includes('Current tab') && composer?.placeholder.includes('Ask Taber'),
+      switchedBackEnglish: composer?.placeholder.includes('Ask Taber'),
       storedEnglish: localStorage.getItem('taber.locale') === 'en',
     };
   })()`);
 
-  return { ...englishReport, ...chineseReport, ...persistedReport, ...englishAgainReport };
+  return { ...englishReport, ...englishStartReport, ...chineseReport, ...chineseStartReport, ...persistedReport, ...englishAgainReport };
 }
 
 async function runHistoryPhase(cdp) {
@@ -400,8 +608,8 @@ function waitForTextExpression(text) {
 
 function fillOnboardingExpression({ apiKey }) {
   return `(() => {
-    const el = document.getElementById('onboarding-api-key');
-    if (!el) throw new Error('input not found: onboarding-api-key');
+    const el = document.getElementById('onboarding-api-key') || document.getElementById('provider-api-key');
+    if (!el) throw new Error('input not found: onboarding-api-key/provider-api-key');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(el, ${JSON.stringify(apiKey)});
     el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -433,7 +641,7 @@ function clearDatabaseExpression() {
       req.onerror = () => reject(req.error);
       req.onblocked = () => resolve(true);
     });
-    const open = indexedDB.open('taber', 40);
+    const open = indexedDB.open('taber', 1);
     open.onupgradeneeded = () => createTaberStores(open.result);
     const db = await new Promise((resolve, reject) => { open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
     const stores = ['providers', 'providerCredentials', 'models', 'sessions', 'toolRuns', 'agentEvents', 'settings'].filter((store) => db.objectStoreNames.contains(store));
@@ -447,11 +655,37 @@ function clearDatabaseExpression() {
   })()`;
 }
 
+function seedOpenAIApiProviderExpression() {
+  return `
+(async () => {
+  localStorage.setItem('__taberSmokeAllSitesGranted', 'true');
+  const open = indexedDB.open('taber', 1);
+  const db = await new Promise((resolve, reject) => { open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
+  const stores = ['providers', 'providerCredentials', 'models', 'sessions', 'agentEvents', 'settings'];
+  await new Promise((resolve, reject) => {
+    const clearTx = db.transaction(stores, 'readwrite');
+    for (const store of stores) clearTx.objectStore(store).clear();
+    clearTx.oncomplete = resolve;
+    clearTx.onerror = () => reject(clearTx.error);
+  });
+  const tx = db.transaction(stores, 'readwrite');
+  const put = (store, value) => tx.objectStore(store).put(value);
+  const now = Date.now();
+  put('providers', { id: 1, kind: 'openaiApiKey', name: 'OpenAI', baseURL: 'https://api.openai.com/v1', createdAt: now, updatedAt: now });
+  put('providerCredentials', { providerId: 1, kind: 'apiKey', value: { apiKey: 'sk-openai-smoke' }, updatedAt: now });
+  put('models', { id: 1, providerId: 1, name: 'gpt-unknown', contextWindowTokens: 128000, supportedReasoningEfforts: [] });
+  put('settings', { key: 'selectedModelId', value: 1 });
+  put('settings', { key: 'browserPageScriptConsent', value: true });
+  await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+  db.close();
+})()`;
+}
+
 function seedDatabaseExpression({ browserControlReady = true } = {}) {
   return `
 (async () => {
   localStorage.setItem('__taberSmokeAllSitesGranted', ${JSON.stringify(browserControlReady ? 'true' : 'false')});
-  const open = indexedDB.open('taber', 40);
+  const open = indexedDB.open('taber', 1);
   open.onupgradeneeded = () => {
     const db = open.result;
     if (!db.objectStoreNames.contains('providers')) {
@@ -500,24 +734,43 @@ function seedDatabaseExpression({ browserControlReady = true } = {}) {
   put('sessions', { id: 2, title: 'Latest markdown session', pinned: false, createdAt: now - 6000, updatedAt: now });
   put('agentEvents', { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'old-task', prompt: 'Older prompt', context: { title: 'Old', url: 'https://example.com/old' } }, createdAt: now - 19000 });
   put('agentEvents', { id: 2, sessionId: 1, type: 'task.completed', payload: { taskId: 'old-task', text: 'Old answer only.' }, createdAt: now - 18000 });
-  put('agentEvents', { id: 3, sessionId: 2, type: 'task.started', payload: { taskId: 'task-1', prompt: 'Summarize this page', context: { title: 'Example', url: 'https://example.com/article' } }, createdAt: now - 5000 });
-  put('agentEvents', { id: 4, sessionId: 2, type: 'tool.started', payload: { toolName: 'getDocument', input: { source: 'currentPage', mode: 'article', chainOfThought: 'secret-cot', nested: { note: '<think>nested-input-secret</think>Visible' } } }, createdAt: now - 4500 });
-  put('agentEvents', { id: 5, sessionId: 2, type: 'tool.completed', payload: { toolName: 'getDocument', output: { ok: true, source: 'currentPage', mode: 'article', url: 'https://example.com/article', content: 'Summary ready.', contentChars: 14, truncated: false, reasoning: 'secret-reasoning', reasoningSummary: 'safe-summary', nested: { note: '<think attr="x">nested-output-secret</think>Visible' } } }, createdAt: now - 3500 });
-  put('agentEvents', { id: 6, sessionId: 2, type: 'tool.completed', payload: { toolName: 'extractImage', output: { ok: true, source: 'viewport', dataUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', mediaType: 'image/gif', width: 1, height: 1 } }, createdAt: now - 3000 });
-  put('agentEvents', { id: 7, sessionId: 2, type: 'tool.started', payload: { toolName: 'debugger', input: { action: 'failedRequests' } }, createdAt: now - 2500 });
-  put('agentEvents', { id: 8, sessionId: 2, type: 'tool.failed', payload: { toolName: 'debugger', error: 'debugger attach failed' }, createdAt: now - 2000 });
-  put('agentEvents', { id: 9, sessionId: 2, type: 'message.created', payload: { role: 'assistant', text: '<think>private reasoning</think>**Summary ready.**\\n\\n- First item\\n- Second item\\n\\n~~~js\\nconsole.log(1)\\n~~~\\n\\n<img src=x onerror="window.__taberXss=1">\\n\\n<think>unterminated-think' }, createdAt: now - 1000 });
-  put('agentEvents', { id: 10, sessionId: 2, type: 'message.created', payload: { role: 'assistant', text: '<think >space-secret</think><think attr="x">attr-secret</think><think\\n>newline-secret</think>Fence visible.\\n~~~ reasoning\\nspace-fence-secret\\n~~~\\n~~~reasoning\\nunterminated-fence\\n~~~cot\\ncot-fence-secret\\n~~~\\n~~~raw-reasoning\\nraw-fence-secret\\n~~~' }, createdAt: now - 900 });
-  put('agentEvents', { id: 11, sessionId: 2, type: 'task.completed', payload: { taskId: 'task-1', text: 'Summary ready.' }, createdAt: now - 800 });
+  put('agentEvents', { id: 3, sessionId: 2, type: 'task.started', payload: { taskId: 'task-1', prompt: 'Summarize this page', context: { id: 31, windowId: 4, title: 'Example', url: 'https://example.com/article', favIconUrl: 'https://example.com/favicon.ico' } }, createdAt: now - 5000 });
+  put('agentEvents', { id: 4, sessionId: 2, type: 'tool.started', payload: { taskId: 'task-1', toolName: 'getDocument', input: { source: 'currentPage', mode: 'article', chainOfThought: 'secret-cot', nested: { note: '<think>nested-input-secret</think>Visible' } } }, createdAt: now - 4500 });
+  put('agentEvents', { id: 5, sessionId: 2, type: 'tool.completed', payload: { taskId: 'task-1', toolName: 'getDocument', output: { ok: true, source: 'currentPage', mode: 'article', url: 'https://example.com/article', content: 'Summary ready.', contentChars: 14, truncated: false, reasoning: 'secret-reasoning', reasoningSummary: 'safe-summary', nested: { note: '<think attr="x">nested-output-secret</think>Visible' } } }, createdAt: now - 3500 });
+  put('agentEvents', { id: 6, sessionId: 2, type: 'tool.completed', payload: { taskId: 'task-1', toolName: 'extractImage', output: { ok: true, source: 'viewport', dataUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', mediaType: 'image/gif', width: 1, height: 1 } }, createdAt: now - 3000 });
+  put('agentEvents', { id: 7, sessionId: 2, type: 'tool.started', payload: { taskId: 'task-1', toolName: 'debugger', input: { action: 'failedRequests' } }, createdAt: now - 2500 });
+  put('agentEvents', { id: 8, sessionId: 2, type: 'tool.failed', payload: { taskId: 'task-1', toolName: 'debugger', error: 'debugger attach failed' }, createdAt: now - 2000 });
+  put('agentEvents', { id: 9, sessionId: 2, type: 'task.targetChanged', payload: { taskId: 'task-1', fromTabId: 31, toTabId: 32, reason: 'switchTab', tab: { id: 32, windowId: 4, title: 'Target article', url: 'https://target.example/article', favIconUrl: 'https://target.example/favicon.ico' } }, createdAt: now - 1500 });
+  put('agentEvents', { id: 10, sessionId: 2, type: 'message.created', payload: { taskId: 'task-1', role: 'assistant', text: '<think>private reasoning</think>**Summary ready.**\\n\\n- First item\\n- Second item\\n\\n~~~js\\nconsole.log(1)\\n~~~\\n\\n<img src=x onerror="window.__taberXss=1">\\n\\n<think>unterminated-think' }, createdAt: now - 1000 });
+  put('agentEvents', { id: 11, sessionId: 2, type: 'message.created', payload: { taskId: 'task-1', role: 'assistant', text: '<think >space-secret</think><think attr="x">attr-secret</think><think\\n>newline-secret</think>Fence visible.\\n~~~ reasoning\\nspace-fence-secret\\n~~~\\n~~~reasoning\\nunterminated-fence\\n~~~cot\\ncot-fence-secret\\n~~~\\n~~~raw-reasoning\\nraw-fence-secret\\n~~~' }, createdAt: now - 900 });
+  put('agentEvents', { id: 12, sessionId: 2, type: 'task.completed', payload: { taskId: 'task-1', text: 'Summary ready.' }, createdAt: now - 800 });
   await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
   db.close();
 })()`;
 }
 
+function seedTargetSwitchExpression() {
+  return `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const now = Date.now();
+      const tx = db.transaction(['sessions', 'agentEvents'], 'readwrite');
+      tx.objectStore('sessions').put({ id: 3, title: 'Running target switch', pinned: false, createdAt: now - 1000, updatedAt: now });
+      tx.objectStore('agentEvents').put({ id: 20, sessionId: 3, type: 'task.started', payload: { taskId: 'switch-task', prompt: 'Switch target smoke', context: { id: 41, windowId: 4, title: 'Initial target', url: 'https://initial.example/page', favIconUrl: 'https://initial.example/favicon.ico' } }, createdAt: now - 900 });
+      tx.oncomplete = () => { db.close(); resolve(true); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  })`;
+}
+
 function installSendMessageStubExpression() {
   return `(() => {
     window.__taberStartMessages = [];
+    window.__taberSwitchMessages = [];
     window.__taberSmokeUserScriptsAvailable = true;
+    window.__taberSmokeActiveTab = { id: 52, windowId: 4, active: true, title: 'Selected tab', url: 'https://selected.example/page', favIconUrl: 'https://selected.example/favicon.ico' };
     Object.defineProperty(window, '__taberSmokeAllSitesGranted', {
       configurable: true,
       get: () => localStorage.getItem('__taberSmokeAllSitesGranted') === 'true',
@@ -528,6 +781,23 @@ function installSendMessageStubExpression() {
       return origins.includes('http://*/*') && origins.includes('https://*/*');
     };
     try {
+      if (!window.__taberSmokeOriginalFetch) window.__taberSmokeOriginalFetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = String(input);
+        if (url === 'https://api.openai.com/v1/models') {
+          return Promise.resolve(new Response(JSON.stringify({ data: [{ id: 'gpt-5.5' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        if (url === 'https://models.dev/api.json') {
+          return Promise.resolve(new Response(JSON.stringify({
+            openai: {
+              name: 'OpenAI',
+              baseURL: 'https://api.openai.com/v1',
+              models: { 'gpt-5.5': { name: 'GPT-5.5', limit: { context: 1000000 } } },
+            },
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        }
+        return window.__taberSmokeOriginalFetch(input, init);
+      };
       if (chrome?.permissions) {
         const originalContains = chrome.permissions.contains?.bind(chrome.permissions);
         const originalRequest = chrome.permissions.request?.bind(chrome.permissions);
@@ -560,6 +830,40 @@ function installSendMessageStubExpression() {
       if (!chrome.userScripts) chrome.userScripts = {};
       if (!chrome.userScripts.execute) chrome.userScripts.execute = () => Promise.resolve([]);
     } catch {}
+    window.__taberSmokeChromeApiRequest = (action, args = []) => {
+      if (action === 'tabs.query') return Promise.resolve([window.__taberSmokeActiveTab]);
+      if (action === 'tabs.update') return Promise.resolve({ id: args[0], active: true });
+      if (action === 'tabs.create') return Promise.resolve({ id: 90, ...(args[0] || {}) });
+      return Promise.resolve(undefined);
+    };
+    window.__taberSmokeSwitchTarget = (message) => new Promise((resolve, reject) => {
+      window.__taberSwitchMessages.push(JSON.parse(JSON.stringify(message)));
+      const open = indexedDB.open('taber');
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction(['sessions', 'agentEvents'], 'readwrite');
+        const store = tx.objectStore('agentEvents');
+        const allReq = store.getAll();
+        allReq.onsuccess = () => {
+          const events = allReq.result;
+          const started = [...events].reverse().find((event) => event.type === 'task.started');
+          const taskId = started?.payload?.taskId || 'switch-task';
+          const sessionId = started?.sessionId || 3;
+          const fromTabId = started?.payload?.context?.id;
+          const targetTab = message.targetTab || window.__taberSmokeActiveTab;
+          const now = Date.now();
+          const id = Math.max(0, ...events.map((event) => Number(event.id) || 0)) + 1;
+          store.add({ id, sessionId, type: 'task.targetChanged', payload: { taskId, fromTabId, toTabId: targetTab.id, reason: message.reason || 'userCurrentTab', tab: targetTab }, createdAt: now });
+          tx.objectStore('sessions').get(sessionId).onsuccess = (event) => {
+            const session = event.target.result;
+            if (session) tx.objectStore('sessions').put({ ...session, updatedAt: now });
+          };
+        };
+        tx.oncomplete = () => { db.close(); resolve({ changed: true, taskId: 'switch-task', targetTab: message.targetTab || window.__taberSmokeActiveTab }); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+      };
+    });
     let offset = 0;
     window.__taberSmokeStartTask = (message) => new Promise((resolve, reject) => {
       window.__taberStartMessages.push(JSON.parse(JSON.stringify(message)));
@@ -615,8 +919,10 @@ function recoveryReportExpression() {
     hidesReasoning: !text.includes('private reasoning') && !text.includes('secret-cot') && !text.includes('secret-reasoning') && !text.includes('unterminated-think') && !text.includes('unterminated-fence') && !text.includes('space-secret') && !text.includes('attr-secret') && !text.includes('newline-secret') && !text.includes('space-fence-secret') && !text.includes('cot-fence-secret') && !text.includes('raw-fence-secret') && !text.includes('nested-input-secret') && !text.includes('nested-output-secret') && !html.includes('secret-cot') && !html.includes('secret-reasoning') && !html.includes('unterminated-think') && !html.includes('unterminated-fence') && !html.includes('space-secret') && !html.includes('attr-secret') && !html.includes('newline-secret') && !html.includes('space-fence-secret') && !html.includes('cot-fence-secret') && !html.includes('raw-fence-secret') && !html.includes('nested-input-secret') && !html.includes('nested-output-secret'),
     keepsReasoningSummary: !text.includes('secret-reasoning') && !html.includes('secret-reasoning'),
     hasModelLabel: text.includes('demo-model'),
-    hasSources: text.includes('Current tab') && text.includes('example.com'),
-    hasSourceFavicon: html.includes('https://example.com/favicon.ico') && Boolean(document.querySelector('img[alt$="favicon"]')),
+    hasSources: text.includes('Last page') && text.includes('target.example') && text.includes('Tab 32'),
+    hidesTargetChangedCard: !text.includes('Controlled page changed to Target article'),
+    noTechnicalDetails: !text.includes('Technical details'),
+    hasSourceFavicon: html.includes('https://target.example/favicon.ico') && Boolean(document.querySelector('img[alt$="favicon"]')),
     hasImagePreview: Boolean(document.querySelector('img[alt][src^="data:image"]')),
     reducedMotionApplied: matchMedia('(prefers-reduced-motion: reduce)').matches && reducedFxEnter,
     submitInteractive: Boolean(submit) && Boolean(composer) && !composer.disabled,

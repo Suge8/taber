@@ -7,7 +7,10 @@ import { connectCdp, connectTarget, delay, evaluate, fetchJson, hasCdpEndpoint, 
 const execFileAsync = promisify(execFile);
 const defaultCdpOrigin = 'http://127.0.0.1:9258';
 const defaultBrowserApp = '/Applications/Google Chrome.app';
-const extensionDir = path.resolve(process.env.TABER_EXTENSION_DIR ?? '.output/chrome-mv3');
+
+function extensionDir() {
+  return path.resolve(process.env.TABER_EXTENSION_DIR ?? '.output/chrome-mv3');
+}
 
 export async function prepareRuntimeBrowser({ required = false, allowLaunch = true } = {}) {
   const cdpOrigin = process.env.TABER_CDP_ORIGIN ?? defaultCdpOrigin;
@@ -80,12 +83,13 @@ export async function findTaberExtensionId(cdpOrigin) {
 }
 
 async function verifyExtensionManifest() {
-  const manifestPath = path.join(extensionDir, 'manifest.json');
+  const dir = extensionDir();
+  const manifestPath = path.join(dir, 'manifest.json');
   let manifest;
   try {
     manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   } catch {
-    throw new Error(`Cannot load Taber extension from ${extensionDir}: manifest.json is missing or unreadable. Run pnpm build:chrome first.`);
+    throw new Error(`Cannot load Taber extension from ${dir}: manifest.json is missing or unreadable. Run pnpm build:chrome first.`);
   }
   if (manifest.manifest_version !== 3) throw new Error(`${manifestPath} is not a MV3 extension manifest.`);
 }
@@ -126,6 +130,7 @@ async function resolveBrowserExecutable(browserApp) {
 }
 
 async function loadUnpackedTaberExtension(cdpOrigin) {
+  const dir = extensionDir();
   const version = await fetchJson(`${cdpOrigin}/json/version`);
   const cdp = await connectCdp(version.webSocketDebuggerUrl);
   try {
@@ -133,7 +138,7 @@ async function loadUnpackedTaberExtension(cdpOrigin) {
     let lastError;
     for (let attempt = 1; attempt <= 5; attempt += 1) {
       try {
-        result = await cdp.send('Extensions.loadUnpacked', { path: extensionDir });
+        result = await cdp.send('Extensions.loadUnpacked', { path: dir });
         break;
       } catch (error) {
         lastError = error;

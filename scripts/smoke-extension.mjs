@@ -29,26 +29,33 @@ try {
 
   const version = await fetchJson(`${runtime.cdpOrigin}/json/version`);
   browserCdp = await connectCdp(version.webSocketDebuggerUrl);
-  pageTarget = await browserCdp.send('Target.createTarget', { url: `chrome-extension://${runtime.extensionId}/sidepanel.html` });
-  const sidepanel = await waitForTarget(runtime.cdpOrigin, (target) => target.id === pageTarget.targetId && hasCdpEndpoint(target));
+  pageTarget = await browserCdp.send('Target.createTarget', { url: `chrome-extension://${runtime.extensionId}/sidepanel.html?taber-smoke=1` });
+  const sidepanel = await waitForTarget(runtime.cdpOrigin, (target) => target.id === pageTarget.targetId && hasCdpEndpoint(target), 15000);
   pageCdp = await connectTarget(sidepanel);
   await pageCdp.send('Runtime.enable');
+  await pageCdp.send('Page.enable');
 
   const sidepanelState = await evaluate(pageCdp, `new Promise((resolve, reject) => {
-    const deadline = Date.now() + 5000;
-    const timer = setInterval(() => {
-      const text = document.body.innerText;
-      const hasOnboarding = Boolean(document.getElementById('onboarding-api-key'));
+    const deadline = Date.now() + 15000;
+    const hasOnboardingUi = (text) => Boolean(document.getElementById('onboarding-api-key'))
+      || Boolean(document.querySelector('[data-smoke="add-api-provider"], [data-smoke="subscription-hub"], [data-smoke^="subscription-login-"]'))
+      || /Welcome to Taber|Get started|Permissions|Website access|Allow User Scripts|API provider|权限|网站访问/.test(text);
+    const tick = () => {
+      const text = document.body?.innerText || '';
+      const hasOnboarding = hasOnboardingUi(text);
       const hasComposer = Boolean(document.querySelector('textarea[name="message"]'));
-      if (hasOnboarding || hasComposer) {
-        clearInterval(timer);
-        resolve({ text, hasOnboarding, hasComposer, runtimeId: chrome.runtime.id });
+      const runtimeId = globalThis.chrome?.runtime?.id;
+      if (runtimeId && (hasOnboarding || hasComposer)) {
+        resolve({ text, hasOnboarding, hasComposer, runtimeId });
+        return;
       }
       if (Date.now() > deadline) {
-        clearInterval(timer);
-        reject(new Error(text || 'sidepanel did not render'));
+        reject(new Error(text || JSON.stringify({ readyState: document.readyState, runtimeId }) || 'sidepanel did not render'));
+        return;
       }
-    }, 50);
+      setTimeout(tick, 50);
+    };
+    tick();
   })`);
   assert(sidepanelState.runtimeId === runtime.extensionId, 'sidepanel runtime id mismatch');
   assert(sidepanelState.hasOnboarding || sidepanelState.hasComposer, 'sidepanel UI missing');

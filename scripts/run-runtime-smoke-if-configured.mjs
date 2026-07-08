@@ -9,6 +9,8 @@ const smokeCommands = {
   'browser-repl': [process.execPath, ['--experimental-strip-types', 'scripts/smoke-browser-repl-runtime.ts']],
   sidepanel: [process.execPath, ['scripts/smoke-sidepanel-ui.mjs']],
 };
+const runtimeOutDirTemplate = 'chrome-mv{{manifestVersion}}-runtime';
+const runtimeExtensionDir = '.output/chrome-mv3-runtime';
 const lockPath = '/tmp/taber-runtime-smoke.lock';
 const legacyOwnerFile = path.join(lockPath, 'owner.json');
 const childTimeoutMs = 180000;
@@ -41,9 +43,15 @@ if (!configured && !browserApp) {
 }
 
 const releaseLock = await acquireRuntimeLock();
+if (!process.env.TABER_EXTENSION_DIR) process.env.TABER_EXTENSION_DIR = runtimeExtensionDir;
 let runtime;
 try {
-  await run('pnpm', ['build:chrome']);
+  await run('pnpm', ['build:chrome'], {
+    TABER_ENABLE_DEBUGGER: '',
+    TABER_DEBUG_ARTIFACT: '',
+    TABER_OUT_DIR_TEMPLATE: runtimeOutDirTemplate,
+  });
+  await assertProductionBuildOutput(process.env.TABER_EXTENSION_DIR);
   runtime = await prepareRuntimeBrowser({ required, allowLaunch: true });
   if (runtime.skipped) {
     console.info(runtime.reason);
@@ -52,7 +60,7 @@ try {
     const env = {
       TABER_CDP_ORIGIN: runtime.cdpOrigin,
       TABER_EXTENSION_ID: runtime.extensionId,
-      TABER_EXTENSION_DIR: process.env.TABER_EXTENSION_DIR ?? '.output/chrome-mv3',
+      TABER_EXTENSION_DIR: process.env.TABER_EXTENSION_DIR,
     };
     for (const smokeName of smokeNames) await runSmoke(smokeName, env);
   }
@@ -113,6 +121,17 @@ async function releaseRuntimeLock(token) {
   const owner = await readLockOwner();
   if (owner?.token !== token) return;
   await rm(lockPath, { recursive: true, force: true });
+}
+
+async function assertProductionBuildOutput(extensionDir) {
+  const manifestPath = path.resolve(extensionDir, 'manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (error) {
+    throw new Error(`Runtime smoke production build is missing at ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (manifest.permissions?.includes('debugger')) throw new Error('Runtime smoke production build unexpectedly contains debugger permission');
 }
 
 async function removeStaleLock(owner) {
