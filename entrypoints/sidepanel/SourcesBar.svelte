@@ -10,16 +10,25 @@
   interface Props {
     locale: Locale;
     sources: SourceLink[];
+    target?: SourceLink;
+    running?: boolean;
     imagePreview?: ImagePreview;
     onOpenSource?: (source: SourceLink) => void | Promise<void>;
+    onUseCurrentTab?: () => void | Promise<void>;
   }
 
-  let { locale, sources, imagePreview, onOpenSource }: Props = $props();
+  let { locale, sources, target, running = false, imagePreview, onOpenSource, onUseCurrentTab }: Props = $props();
   let t = $derived(messages[locale].sources);
   let previewOpen = $state(false);
+  let confirmSwitchOpen = $state(false);
   let thumbnailFailed = $state(false);
   let previewFailed = $state(false);
-  const current = $derived(sources[0]);
+  const otherSources = $derived(target ? sources.filter((source) => source.url !== target.url) : sources);
+  const fallbackSource = $derived(sources[0]);
+  const displaySource = $derived(target ?? fallbackSource);
+  const primaryLabel = $derived(target ? (running ? t.controllingPage : t.lastPage) : t.title);
+  const targetDetailsLabel = $derived(running ? t.targetDetails : t.lastPage);
+  const openTargetLabel = $derived(running ? t.openControlledPage : t.openLastPage);
 
   $effect(() => {
     imagePreview?.src;
@@ -38,56 +47,111 @@
     }
     window.open(source.url, '_blank', 'noopener');
   }
+
+  function requestSwitchTarget() {
+    if (!running || !onUseCurrentTab) return;
+    confirmSwitchOpen = true;
+  }
+
+  function confirmSwitchTarget() {
+    confirmSwitchOpen = false;
+    void onUseCurrentTab?.();
+  }
+
+  function detailValue(value: unknown) {
+    return value === undefined || value === '' ? '—' : String(value);
+  }
+
+  function sourceSubtitle(source: SourceLink) {
+    return [source.domain || source.url, source.tabId ? t.tabNumber(source.tabId) : ''].filter(Boolean).join(' · ');
+  }
 </script>
 
-{#if sources.length > 0 || imagePreview}
+{#if displaySource || imagePreview}
   <section class="fx-enter shrink-0 px-3 pb-0.5 pt-1.5">
     <div class="bg-surface ring-line/70 flex min-h-9 items-center gap-2 rounded-2xl px-2.5 py-1.5 text-[12px] shadow-[0_8px_24px_oklch(0_0_0_/_0.035)] ring-1">
-      <DropdownMenu.Root>
-        <DropdownMenu.Trigger class="hover:bg-surface-2 flex min-w-0 flex-1 items-center gap-2 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-[var(--ease-out)]">
-          <span class="bg-surface-2 ring-line/60 relative flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
-            <GlobeSimple class="text-muted-foreground size-3" />
-            {#if current?.faviconUrl}
-              <img
-                src={current.faviconUrl}
-                alt="{current.domain || current.label} favicon"
-                class="absolute inset-1 size-3 rounded-[3px] object-contain"
-                onerror={hideBrokenImage}
-              />
+      {#if displaySource}
+        <DropdownMenu.Root>
+          <DropdownMenu.Trigger class="hover:bg-surface-2 flex min-w-0 flex-1 items-center gap-2 rounded-xl px-1.5 py-1 text-left transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" aria-label={target ? targetDetailsLabel : t.title} data-smoke="controlled-target">
+            <span class="bg-surface-2 ring-line/60 relative flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
+              <GlobeSimple class="text-muted-foreground size-3" />
+              {#if displaySource.faviconUrl}
+                <img
+                  src={displaySource.faviconUrl}
+                  alt="{displaySource.domain || displaySource.label} favicon"
+                  class="absolute inset-1 size-3 rounded-[3px] object-contain"
+                  onerror={hideBrokenImage}
+                />
+              {/if}
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-foreground/90">{primaryLabel} · {displaySource.label}</span>
+              <span class="block truncate text-[10.5px] text-muted-foreground">{sourceSubtitle(displaySource)}</span>
+            </span>
+            {#if otherSources.length > 0}<span class="text-muted-foreground shrink-0">{t.sourceCount(otherSources.length)}</span>{/if}
+            {#if imagePreview}<span class="text-muted-foreground shrink-0">{t.imageCount(1)}</span>{/if}
+          </DropdownMenu.Trigger>
+          <DropdownMenu.Content side="top" align="start" sideOffset={8} class="w-[min(22rem,calc(100vw-2rem))] rounded-2xl p-2 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
+            {#if target}
+              <DropdownMenu.Label class="text-[11px] text-muted-foreground">{targetDetailsLabel}</DropdownMenu.Label>
+            <div class="bg-surface-2/70 ring-line/60 mb-1.5 rounded-xl p-2 ring-1">
+              <div class="mb-2 flex min-w-0 items-center gap-2">
+                <span class="bg-surface ring-line/60 relative flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
+                  <GlobeSimple class="size-3.5 text-muted-foreground" />
+                  {#if target.faviconUrl}<img src={target.faviconUrl} alt="{target.domain || target.label} favicon" class="absolute inset-1 size-5 rounded-[4px] object-contain" onerror={hideBrokenImage} />{/if}
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-xs font-medium text-foreground">{target.label}</span>
+                  <span class="block truncate text-[11px] text-muted-foreground">{target.domain || target.url}</span>
+                </span>
+              </div>
+              <dl class="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px]">
+                <dt class="text-muted-foreground">{t.targetUrl}</dt><dd class="truncate text-foreground/90" title={target.url}>{target.url}</dd>
+                <dt class="text-muted-foreground">{t.targetTabId}</dt><dd class="tabular text-foreground/90">{detailValue(target.tabId)}</dd>
+                <dt class="text-muted-foreground">{t.targetWindowId}</dt><dd class="tabular text-foreground/90">{detailValue(target.windowId)}</dd>
+              </dl>
+            </div>
+              <DropdownMenu.Item class="gap-2 rounded-xl px-2 py-2 text-xs" onclick={() => openSource(target)}>
+                <ArrowSquareOut class="size-3.5 text-muted-foreground" />
+                {openTargetLabel}
+              </DropdownMenu.Item>
+              {#if running && onUseCurrentTab}
+                <DropdownMenu.Item class="gap-2 rounded-xl px-2 py-2 text-xs" title={t.switchToCurrentTab} onclick={requestSwitchTarget} data-smoke="switch-target-current-tab">
+                  <GlobeSimple class="size-3.5 text-muted-foreground" />
+                  {t.switchToCurrentTab}
+                </DropdownMenu.Item>
+              {/if}
             {/if}
-          </span>
-          <span class="min-w-0 flex-1 truncate text-foreground/90">
-            {#if current}{t.currentTab} · {current.domain || current.label}{:else}{t.noPage}{/if}
-          </span>
-          {#if sources.length > 0}<span class="text-muted-foreground shrink-0">{t.sourceCount(sources.length)}</span>{/if}
-          {#if imagePreview}<span class="text-muted-foreground shrink-0">{t.imageCount(1)}</span>{/if}
-        </DropdownMenu.Trigger>
-        <DropdownMenu.Content side="top" align="start" sideOffset={8} class="w-[min(22rem,calc(100vw-2rem))] rounded-2xl p-2 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
-          <DropdownMenu.Label class="text-[11px] text-muted-foreground">{t.viewSources}</DropdownMenu.Label>
-          {#each sources as source (source.url)}
-            <DropdownMenu.Item
-              class="gap-2 rounded-xl px-2 py-2 text-xs"
-              onclick={() => openSource(source)}
-            >
-              <span class="bg-surface-2 ring-line/60 relative flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
-                <ArrowSquareOut class="size-3 text-muted-foreground" />
-                {#if source.faviconUrl}
-                  <img
-                    src={source.faviconUrl}
-                    alt="{source.domain || source.label} favicon"
-                    class="absolute inset-1 size-4 rounded-[4px] object-contain"
-                    onerror={hideBrokenImage}
-                  />
-                {/if}
-              </span>
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-foreground">{source.label}</span>
-                <span class="block truncate text-muted-foreground">{source.domain || source.url}</span>
-              </span>
-            </DropdownMenu.Item>
-          {/each}
-        </DropdownMenu.Content>
-      </DropdownMenu.Root>
+
+            {#if otherSources.length > 0}
+              {#if target}<div class="bg-line/70 my-1.5 h-px"></div>{/if}
+              <DropdownMenu.Label class="text-[11px] text-muted-foreground">{t.viewSources}</DropdownMenu.Label>
+            {#each otherSources as source (source.url)}
+              <DropdownMenu.Item
+                class="gap-2 rounded-xl px-2 py-2 text-xs"
+                onclick={() => openSource(source)}
+              >
+                <span class="bg-surface-2 ring-line/60 relative flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
+                  <ArrowSquareOut class="size-3 text-muted-foreground" />
+                  {#if source.faviconUrl}
+                    <img
+                      src={source.faviconUrl}
+                      alt="{source.domain || source.label} favicon"
+                      class="absolute inset-1 size-4 rounded-[4px] object-contain"
+                      onerror={hideBrokenImage}
+                    />
+                  {/if}
+                </span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-foreground">{source.label}</span>
+                  <span class="block truncate text-muted-foreground">{source.domain || source.url}</span>
+                </span>
+              </DropdownMenu.Item>
+            {/each}
+            {/if}
+          </DropdownMenu.Content>
+        </DropdownMenu.Root>
+      {/if}
 
       {#if imagePreview}
         <button
@@ -133,5 +197,18 @@
         />
       {/if}
     {/if}
+  </Dialog.Content>
+</Dialog.Root>
+
+<Dialog.Root bind:open={confirmSwitchOpen}>
+  <Dialog.Content class="w-[min(92vw,22rem)] gap-4 rounded-2xl p-4">
+    <Dialog.Header>
+      <Dialog.Title class="text-sm">{t.switchConfirmTitle}</Dialog.Title>
+      <Dialog.Description class="text-xs text-muted-foreground">{t.switchConfirmDescription}</Dialog.Description>
+    </Dialog.Header>
+    <div class="flex justify-end gap-2">
+      <button type="button" class="hover:bg-surface-2 rounded-xl px-3 py-2 text-xs text-muted-foreground transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" onclick={() => (confirmSwitchOpen = false)}>{t.switchCancel}</button>
+      <button type="button" class="bg-primary text-primary-foreground hover:bg-primary/90 rounded-xl px-3 py-2 text-xs font-medium transition-[background-color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" onclick={confirmSwitchTarget}>{t.switchConfirm}</button>
+    </div>
   </Dialog.Content>
 </Dialog.Root>

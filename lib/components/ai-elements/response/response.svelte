@@ -3,6 +3,7 @@
   import { marked } from 'marked';
   import { cn } from '$lib/utils';
   import { hideReasoningText } from '$lib/sidepanel-view.ts';
+  import { normalizeAssistantMarkdown } from './markdown';
 
   interface Props {
     content?: string;
@@ -15,7 +16,7 @@
   const html = $derived(content === undefined ? '' : renderMarkdown(content));
 
   function renderMarkdown(value: string) {
-    const rawHtml = marked.parse(hideReasoningText(value), { async: false, gfm: true, breaks: false }) as string;
+    const rawHtml = marked.parse(normalizeAssistantMarkdown(hideReasoningText(value)), { async: false, gfm: true, breaks: true }) as string;
     return DOMPurify.sanitize(rawHtml, {
       USE_PROFILES: { html: true },
       FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'img'],
