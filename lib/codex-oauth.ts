@@ -6,6 +6,18 @@ import {
   parseCodexTokenMetadata,
   redactCodexSecrets,
 } from './codex-auth.ts';
+import {
+  type BrowserOAuthTabs,
+  type BrowserOAuthWebNavigation,
+  BrowserOAuthError,
+  buildOAuthAuthorizeUrl,
+  createPkce,
+  exchangeOAuthCode,
+  readBearerTokens,
+  readOAuthAuthorizationCode,
+  safeUrl,
+  waitForBrowserOAuthRedirect,
+} from './oauth-browser.ts';
 
 export const CODEX_OAUTH_AUTHORIZE_URL = `${CODEX_ISSUER}/oauth/authorize`;
 export const CODEX_OAUTH_TOKEN_URL = `${CODEX_ISSUER}/oauth/token`;
@@ -23,26 +35,8 @@ export type CodexOAuthIdentity = {
   }): Promise<string | undefined>;
 };
 
-export type CodexOAuthTabs = {
-  create(options: { url: string; active?: boolean }): Promise<{ id?: number }>;
-  update?(tabId: number, options: { url: string; active?: boolean }): Promise<unknown>;
-  remove(tabId: number): Promise<unknown>;
-  onUpdated: {
-    addListener(listener: (tabId: number, changeInfo: { url?: string }) => void): void;
-    removeListener(listener: (tabId: number, changeInfo: { url?: string }) => void): void;
-  };
-  onRemoved: {
-    addListener(listener: (tabId: number) => void): void;
-    removeListener(listener: (tabId: number) => void): void;
-  };
-};
-
-export type CodexOAuthWebNavigation = {
-  onBeforeNavigate: {
-    addListener(listener: (details: { tabId: number; frameId: number; url: string }) => void): void;
-    removeListener(listener: (details: { tabId: number; frameId: number; url: string }) => void): void;
-  };
-};
+export type CodexOAuthTabs = BrowserOAuthTabs;
+export type CodexOAuthWebNavigation = BrowserOAuthWebNavigation;
 
 type LoginOptions = {
   tabs: CodexOAuthTabs;
@@ -62,11 +56,9 @@ type ExchangeOptions = {
   redirectUri?: string;
 };
 
-const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
-
 export async function loginOpenAICodex(options: LoginOptions): Promise<CodexAuthTokens> {
   const pkce = await createCodexPkce();
-  const state = randomBase64Url(32);
+  const state = cryptoRandomState();
 
   if (options.identity) {
     try {
@@ -81,7 +73,7 @@ export async function loginOpenAICodex(options: LoginOptions): Promise<CodexAuth
       });
       return completeCodexOAuthRedirect(redirectUrl, { state, codeVerifier: pkce.verifier, redirectUri, ...options });
     } catch (error) {
-      if (!shouldUseLocalhostFallback(error)) throw error;
+      if (!shouldUseLocalhostFallback(error)) throw mapBrowserError(error);
     }
   }
 
@@ -91,41 +83,20 @@ export async function loginOpenAICodex(options: LoginOptions): Promise<CodexAuth
 }
 
 export async function exchangeCodexOAuthCode(authorizationCode: string, codeVerifier: string, options: ExchangeOptions = {}): Promise<CodexAuthTokens> {
-  const fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
-  let response: Response;
   try {
-    response = await fetcher(CODEX_OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code: authorizationCode,
-        redirect_uri: options.redirectUri ?? CODEX_OAUTH_REDIRECT_URI,
-        client_id: CODEX_CLIENT_ID,
-        code_verifier: codeVerifier,
-      }),
+    const body = await exchangeOAuthCode({
+      tokenUrl: CODEX_OAUTH_TOKEN_URL,
+      authorizationCode,
+      codeVerifier,
+      redirectUri: options.redirectUri ?? CODEX_OAUTH_REDIRECT_URI,
+      clientId: CODEX_CLIENT_ID,
+      fetch: options.fetch,
       signal: options.signal,
     });
+    return normalizeCodexOAuthTokens(body, options.now ?? Date.now());
   } catch (error) {
-    throw new CodexAuthError(isAbortError(error) ? 'aborted' : 'token_exchange', describe(error));
+    throw mapBrowserError(error);
   }
-  if (!response.ok) throw new CodexAuthError('token_exchange', await readError(response), response.status);
-  const body = await readTokenJson(response);
-  const accessToken = readString(body.access_token);
-  const refreshToken = readString(body.refresh_token);
-  if (!accessToken || !refreshToken) throw new CodexAuthError('unexpected_response', 'OAuth token response is missing access_token or refresh_token.');
-  const idToken = readString(body.id_token);
-  const expiresIn = readPositiveNumber(body.expires_in);
-  const metadata = parseCodexTokenMetadata({ accessToken, idToken }, options.now ?? Date.now());
-  return {
-    accessToken,
-    refreshToken,
-    ...(idToken ? { idToken } : {}),
-    expiresAt: expiresIn ? (options.now ?? Date.now()) + expiresIn * 1000 : metadata.expiresAt,
-    ...(metadata.accountId ? { accountId: metadata.accountId } : {}),
-    ...(metadata.email ? { email: metadata.email } : {}),
-    ...(metadata.planType ? { planType: metadata.planType } : {}),
-  };
 }
 
 export async function waitForCodexIdentityRedirect(
@@ -163,6 +134,63 @@ export async function waitForCodexIdentityRedirect(
   }
 }
 
+export async function waitForCodexOAuthRedirect(authUrl: string, options: Pick<LoginOptions, 'tabs' | 'webNavigation' | 'timeoutMs' | 'signal'>): Promise<URL> {
+  try {
+    return await waitForBrowserOAuthRedirect(authUrl, {
+      tabs: options.tabs,
+      webNavigation: options.webNavigation,
+      timeoutMs: options.timeoutMs,
+      signal: options.signal,
+      isRedirect: isLocalhostRedirect,
+    });
+  } catch (error) {
+    throw mapBrowserError(error);
+  }
+}
+
+export async function createCodexPkce() {
+  return createPkce();
+}
+
+export function buildCodexAuthorizeUrl(input: { codeChallenge: string; state: string; originator?: string; redirectUri?: string }) {
+  return buildOAuthAuthorizeUrl({
+    authorizeUrl: CODEX_OAUTH_AUTHORIZE_URL,
+    clientId: CODEX_CLIENT_ID,
+    redirectUri: input.redirectUri ?? CODEX_OAUTH_REDIRECT_URI,
+    scope: CODEX_OAUTH_SCOPES,
+    codeChallenge: input.codeChallenge,
+    state: input.state,
+    extraParams: {
+      id_token_add_organizations: 'true',
+      codex_cli_simplified_flow: 'true',
+      originator: input.originator ?? 'taber',
+    },
+  });
+}
+
+async function completeCodexOAuthRedirect(redirectUrl: URL, input: { state: string; codeVerifier: string; redirectUri: string } & ExchangeOptions) {
+  try {
+    const authorizationCode = readOAuthAuthorizationCode(redirectUrl, input.state);
+    return exchangeCodexOAuthCode(authorizationCode, input.codeVerifier, input);
+  } catch (error) {
+    throw mapBrowserError(error);
+  }
+}
+
+function normalizeCodexOAuthTokens(body: Record<string, unknown>, now: number): CodexAuthTokens {
+  const tokens = readBearerTokens(body, now);
+  const metadata = parseCodexTokenMetadata({ accessToken: tokens.accessToken, idToken: tokens.idToken }, now);
+  return {
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    ...(tokens.idToken ? { idToken: tokens.idToken } : {}),
+    expiresAt: tokens.expiresAt,
+    ...(metadata.accountId ? { accountId: metadata.accountId } : {}),
+    ...(metadata.email ? { email: metadata.email } : {}),
+    ...(metadata.planType ? { planType: metadata.planType } : {}),
+  };
+}
+
 function watchIdentityUnsupportedPage(options: { tabs?: CodexOAuthTabs; webNavigation?: CodexOAuthWebNavigation }) {
   let removeListener: () => void = () => undefined;
   const promise = new Promise<never>((_resolve, reject) => {
@@ -177,94 +205,6 @@ function watchIdentityUnsupportedPage(options: { tabs?: CodexOAuthTabs; webNavig
     options.webNavigation.onBeforeNavigate.addListener(onBeforeNavigate);
   });
   return { promise, cleanup: removeListener };
-}
-
-export async function waitForCodexOAuthRedirect(authUrl: string, options: Pick<LoginOptions, 'tabs' | 'webNavigation' | 'timeoutMs' | 'signal'>): Promise<URL> {
-  const tab = await options.tabs.create({ url: options.tabs.update ? 'about:blank' : authUrl, active: true });
-  if (!tab.id) throw new CodexAuthError('auth', 'Failed to create OAuth tab.');
-  const tabId = tab.id;
-  return new Promise<URL>((resolve, reject) => {
-    const timeout = setTimeout(() => finish(undefined, new CodexAuthError('timeout', 'OAuth login timed out.')), options.timeoutMs ?? LOGIN_TIMEOUT_MS);
-    const abort = () => finish(undefined, new CodexAuthError('aborted', 'OAuth login was cancelled.'));
-    const maybeFinish = (value: string | undefined) => {
-      const url = safeUrl(value);
-      if (isLocalhostRedirect(url)) finish(url);
-    };
-    const onBeforeNavigate = (details: { tabId: number; frameId: number; url: string }) => {
-      if (details.tabId === tabId && details.frameId === 0) maybeFinish(details.url);
-    };
-    const onUpdated = (updatedTabId: number, changeInfo: { url?: string }) => {
-      if (updatedTabId === tabId) maybeFinish(changeInfo.url);
-    };
-    const onRemoved = (removedTabId: number) => {
-      if (removedTabId === tabId) finish(undefined, new CodexAuthError('auth', 'OAuth tab was closed before completing login.'));
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      options.signal?.removeEventListener('abort', abort);
-      options.webNavigation?.onBeforeNavigate.removeListener(onBeforeNavigate);
-      options.tabs.onUpdated.removeListener(onUpdated);
-      options.tabs.onRemoved.removeListener(onRemoved);
-    };
-    const finish = (url?: URL, error?: Error) => {
-      cleanup();
-      void options.tabs.remove(tabId).catch(() => undefined);
-      if (url) resolve(url);
-      else reject(error ?? new CodexAuthError('auth', 'OAuth login failed.'));
-    };
-    if (options.signal?.aborted) abort();
-    else {
-      options.signal?.addEventListener('abort', abort, { once: true });
-      options.webNavigation?.onBeforeNavigate.addListener(onBeforeNavigate);
-      options.tabs.onUpdated.addListener(onUpdated);
-      options.tabs.onRemoved.addListener(onRemoved);
-      if (options.tabs.update) void options.tabs.update(tabId, { url: authUrl, active: true }).catch((error) => finish(undefined, error instanceof Error ? error : new Error(String(error))));
-    }
-  });
-}
-
-export async function createCodexPkce() {
-  const verifier = randomBase64Url(32);
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
-  return { verifier, challenge: base64Url(new Uint8Array(digest)) };
-}
-
-export function buildCodexAuthorizeUrl(input: { codeChallenge: string; state: string; originator?: string; redirectUri?: string }) {
-  const url = new URL(CODEX_OAUTH_AUTHORIZE_URL);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('client_id', CODEX_CLIENT_ID);
-  url.searchParams.set('redirect_uri', input.redirectUri ?? CODEX_OAUTH_REDIRECT_URI);
-  url.searchParams.set('scope', CODEX_OAUTH_SCOPES);
-  url.searchParams.set('code_challenge', input.codeChallenge);
-  url.searchParams.set('code_challenge_method', 'S256');
-  url.searchParams.set('id_token_add_organizations', 'true');
-  url.searchParams.set('codex_cli_simplified_flow', 'true');
-  url.searchParams.set('state', input.state);
-  url.searchParams.set('originator', input.originator ?? 'taber');
-  return url.toString();
-}
-
-async function completeCodexOAuthRedirect(redirectUrl: URL, input: { state: string; codeVerifier: string; redirectUri: string } & ExchangeOptions) {
-  const error = redirectUrl.searchParams.get('error');
-  if (error) throw new CodexAuthError('auth', redirectUrl.searchParams.get('error_description') ?? error);
-  if (redirectUrl.searchParams.get('state') !== input.state) throw new CodexAuthError('auth', 'OAuth state mismatch.');
-  const authorizationCode = redirectUrl.searchParams.get('code');
-  if (!authorizationCode) throw new CodexAuthError('auth', 'OAuth redirect is missing authorization code.');
-  return exchangeCodexOAuthCode(authorizationCode, input.codeVerifier, input);
-}
-
-async function readTokenJson(response: Response) {
-  try {
-    const value = await response.json();
-    return value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  } catch (error) {
-    throw new CodexAuthError('token_exchange', `Invalid OAuth token JSON: ${describe(error)}`, response.status);
-  }
-}
-
-async function readError(response: Response) {
-  const text = await response.text().catch(() => '');
-  return `OAuth token request failed: HTTP ${response.status} ${response.statusText}${text ? `: ${redactCodexSecrets(text).slice(0, 300)}` : ''}`;
 }
 
 function shouldUseLocalhostFallback(error: unknown) {
@@ -289,37 +229,24 @@ function decodeOAuthErrorPayload(payload: string | null) {
   }
 }
 
-function isLocalhostRedirect(url: URL | undefined) {
-  return url?.hostname === 'localhost' && url.host === 'localhost:1455';
+function isLocalhostRedirect(url: URL) {
+  return url.hostname === 'localhost' && url.host === 'localhost:1455';
 }
 
-function safeUrl(value: string | undefined) {
-  try {
-    return value ? new URL(value) : undefined;
-  } catch {
-    return undefined;
+function mapBrowserError(error: unknown): Error {
+  if (error instanceof CodexAuthError) return error;
+  if (error instanceof BrowserOAuthError) {
+    return new CodexAuthError(error.kind === 'unexpected_response' ? 'unexpected_response' : error.kind, error.message);
   }
+  return error instanceof Error ? error : new CodexAuthError('auth', String(error));
 }
 
-function randomBase64Url(length: number) {
-  const bytes = new Uint8Array(length);
+function cryptoRandomState() {
+  const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
-  return base64Url(bytes);
-}
-
-function base64Url(bytes: Uint8Array) {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function readString(value: unknown) {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function readPositiveNumber(value: unknown) {
-  const number = typeof value === 'string' ? Number(value) : value;
-  return typeof number === 'number' && Number.isFinite(number) && number > 0 ? number : undefined;
 }
 
 function throwIfAborted(signal: AbortSignal | undefined) {
