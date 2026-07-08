@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser';
 import {
   allSitesOrigins,
+  browserControlReady,
   browserPageScriptConsentKey,
   type BrowserControlState,
 } from '$lib/browser-access.ts';
@@ -14,7 +15,7 @@ export async function readBrowserControlState(): Promise<BrowserControlState> {
     database.settings.get(browserPageScriptConsentKey),
   ]);
   const userScriptsAvailable = browserUserScriptsAvailable();
-  const ready = allSites && userScriptsAvailable;
+  const ready = browserControlReady({ allSites, userScriptsAvailable });
   if (ready && consent?.value !== true) await setPageScriptConsent(true);
   return {
     allSites,

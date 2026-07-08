@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { allSitesOrigins, isPageAccessError, originPatternForUrl, pageAccessErrorMessage, userScriptsErrorMessage } from '../lib/browser-access.ts';
+import { allSitesOrigins, browserControlReady, isPageAccessError, originPatternForUrl, pageAccessErrorMessage, userScriptsErrorMessage } from '../lib/browser-access.ts';
 
 assert.deepEqual([...allSitesOrigins], ['http://*/*', 'https://*/*']);
 assert.equal(originPatternForUrl('https://example.com/path?q=1'), 'https://example.com/*');
@@ -9,6 +9,9 @@ assert.equal(originPatternForUrl('not a url'), undefined);
 
 assert.equal(isPageAccessError(new Error('Cannot access contents of url "https://example.com". Extension manifest must request permission.')), true);
 assert.equal(isPageAccessError(new Error('random failure')), false);
+assert.equal(browserControlReady({ allSites: true, userScriptsAvailable: true }), true);
+assert.equal(browserControlReady({ allSites: false, userScriptsAvailable: true }), false);
+assert.equal(browserControlReady({ allSites: true, userScriptsAvailable: false }), false);
 assert.match(pageAccessErrorMessage(), /Browser Control/);
 assert.match(userScriptsErrorMessage(), /Allow User Scripts/);
 

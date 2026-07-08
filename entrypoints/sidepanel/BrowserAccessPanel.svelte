@@ -23,7 +23,6 @@
   let accessState: BrowserControlState = $state({ allSites: false, pageScriptConsent: false, userScriptsAvailable: false, ready: false });
   let loading = $state(true);
   let busy = $state('');
-  let error = $state('');
 
   let t = $derived(messages[locale].browserAccess);
   let userScriptsGranted = $derived(accessState.userScriptsAvailable);
@@ -45,10 +44,9 @@
     loading = true;
     try {
       accessState = await readBrowserControlState();
-      error = '';
       await onChanged?.(accessState);
     } catch (nextError) {
-      error = describe(nextError);
+      notify?.({ tone: 'error', icon: 'browser', text: describe(nextError) });
     } finally {
       loading = false;
     }
@@ -56,16 +54,14 @@
 
   async function grantAllSites() {
     busy = 'all-sites';
-    error = '';
     try {
       const granted = await requestAllSitesAccess();
       await refresh();
       if (!granted) return;
-      notify?.({ tone: 'success', text: t.saved });
+      notify?.({ tone: 'success', icon: 'browser', text: t.saved });
       if (accessState.ready) await onDone?.();
     } catch (nextError) {
-      error = describe(nextError) || t.failed;
-      notify?.({ tone: 'error', text: error });
+      notify?.({ tone: 'error', icon: 'browser', text: describe(nextError) || t.failed });
     } finally {
       busy = '';
     }
@@ -157,7 +153,4 @@
     </li>
   </ol>
 
-  {#if error}
-    <p class="text-danger mt-1 text-xs" role="alert">{error}</p>
-  {/if}
 </section>

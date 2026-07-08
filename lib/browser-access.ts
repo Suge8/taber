@@ -19,6 +19,10 @@ export function originPatternForUrl(url: string | undefined) {
   }
 }
 
+export function browserControlReady(input: Pick<BrowserControlState, 'allSites' | 'userScriptsAvailable'>) {
+  return input.allSites && input.userScriptsAvailable;
+}
+
 export function isPageAccessError(error: unknown) {
   const message = stringifyError(error);
   return /Cannot access|Missing host permission|host permission|permissions|Extensions gallery|Cannot access contents|activeTab|not allowed|userScripts|Browser Control/i.test(message);
