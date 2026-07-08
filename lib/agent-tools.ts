@@ -1,11 +1,11 @@
-import { jsonSchema, tool, type JSONValue } from 'ai';
+import { jsonSchema, tool } from 'ai';
 import { appendToolRun } from './db.ts';
-import { isPageAccessError, pageAccessErrorMessage, userScriptsErrorMessage } from './browser-access.ts';
-import { DEFAULT_BROWSER_REPL_TIMEOUT_MS, browserReplFallbackFor, browserReplInputJsonSchema, createBrowserReplController, parseBrowserReplInput, type BrowserReplInput, type BrowserReplPageCommand, type BrowserReplResult } from './browser-repl.ts';
-import { canUseCdpFallback, executeBrowserReplCdpFallback } from './browser-repl-cdp.ts';
-import { createBrowserReplUserScript } from './browser-repl-page.ts';
+import { DEFAULT_BROWSER_TOOL_TIMEOUT_MS, browserDescription, browserInputJsonSchema, parseBrowserInput, type BrowserInput, type BrowserResult } from './browser-tool.ts';
+import { isPageAccessError, pageAccessErrorMessage } from './browser-access.ts';
+import { browserReplToolHelperNames, createBrowserReplController, createBrowserReplInputJsonSchema, parseBrowserReplInput, type BrowserReplInput, type BrowserReplResult } from './browser-repl.ts';
 import { runBrowserReplInSandbox } from './browser-repl-sandbox.ts';
-import { chromeApiRequestType, type ChromeApiAction } from './chrome-api-broker.ts';
+import { createBrowserReplPageExecutor } from './browser-repl-executor.ts';
+import { extractImageToModelOutput } from './agent-tool-image-output.ts';
 import { debuggerInputJsonSchema, debuggerRequestType, parseDebuggerInput, type DebuggerInput, type DebuggerResult } from './debugger-tool.ts';
 import { createExtractImageController, extractImageInputJsonSchema, parseExtractImageInput, type ExtractImageInput, type ExtractImageResult } from './extract-image.ts';
 import { createGetDocumentController, getDocumentInputJsonSchema, parseGetDocumentInput, type GetDocumentInput, type GetDocumentResult, type PageDocument } from './get-document.ts';
@@ -15,34 +15,72 @@ import { DEBUGGER_ENABLED } from './runtime-flags.ts';
 type SendMessage = (message: unknown) => Promise<unknown>;
 type EmitEvent = (type: string, payload: unknown) => Promise<void>;
 type RunSandbox = typeof runBrowserReplInSandbox;
+type TargetChangeReason = 'openNew' | 'switchTab';
+type TargetChanged = { fromTabId?: number; toTabId: number; reason: TargetChangeReason; tab?: unknown };
 
-type AgentToolOptions = { sessionId: number; taskId?: string; windowId?: number; sendMessage: SendMessage; emitEvent: EmitEvent; runSandbox?: RunSandbox; browserJsEnabled?: boolean };
+type AgentToolOptions = {
+  sessionId: number;
+  taskId?: string;
+  windowId?: number;
+  targetTabId?: number;
+  getTargetTabId?: () => number | undefined;
+  sendMessage: SendMessage;
+  emitEvent: EmitEvent;
+  onTargetChanged?: (change: TargetChanged) => Promise<void>;
+  onTargetUnavailable?: (error: string) => Promise<void>;
+  runSandbox?: RunSandbox;
+  browserJsEnabled?: boolean;
+};
 
-const getDocumentDescription = 'Read documents with explicit source contracts. Current page DOM uses source:"currentPage" with mode:"article"|"page"|"selection" and optional tabId/includeTables. PDF uses source:"pdf" + url. UI-provided text only uses source:"file" + fileText. Do not pass url for currentPage; remote HTML reader is unsupported.';
-const extractImageDescription = 'Extract images with explicit source contracts. Use source:"viewport" for the current visible tab only; to capture another tab, call navigate switchTab first, then viewport. Use source:"imageElement" + selector for an <img> URL, source:"canvas" + selector for canvas pixels, and source:"backgroundImage" + selector for CSS background-image. format defaults to png; jpegQuality is an integer 0-100 and is only valid with format:"jpeg". No full-page stitching.';
+const getDocumentDescription = 'Read webpage, PDF, or file as structured content. Use when you need article text, page content, selection, or tables. For currentPage: mode:"article" extracts main content, mode:"page" gets full text, mode:"selection" reads user selection. Results include open shadow root text and same-origin iframe content; cross-origin iframes show metadata with access hints.';
+const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport requires visible target tab; to capture another tab, call navigate.switchTab first.';
+const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Use for all navigation. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly.';
+const debuggerDescription = 'Debug-build only: read console, network, failed requests, accessibility snapshots, main-world JS state, or raw CDP. Use for diagnosing console errors, network failures, and accessibility issues. Cookies are blocked.';
 
 export function createAgentToolPromptEstimateText(options: { browserJsEnabled?: boolean } = {}) {
   return JSON.stringify({
     getDocument: { description: getDocumentDescription, inputSchema: getDocumentInputJsonSchema },
     extractImage: { description: extractImageDescription, inputSchema: extractImageInputJsonSchema },
-    navigate: { description: 'Navigate browser tabs: open URLs, back, forward, reload, list tabs, switch tab, close tab, or read current tab.', inputSchema: navigateInputJsonSchema },
-    browserRepl: { description: browserReplDescription(options.browserJsEnabled !== false), inputSchema: browserReplInputJsonSchema },
-    ...(DEBUGGER_ENABLED ? { debugger: { description: 'Read console logs, network logs, failed requests, evaluate main-world JavaScript, or call CDP. Cookies are blocked.', inputSchema: debuggerInputJsonSchema } } : {}),
+    navigate: { description: navigateDescription, inputSchema: navigateInputJsonSchema },
+    browser: { description: browserDescription, inputSchema: browserInputJsonSchema },
+    browserRepl: { description: browserReplDescription(options.browserJsEnabled !== false), inputSchema: createBrowserReplInputJsonSchema({ browserJsEnabled: options.browserJsEnabled !== false }) },
+    ...(DEBUGGER_ENABLED ? { debugger: { description: debuggerDescription, inputSchema: debuggerInputJsonSchema } } : {}),
   });
 }
 
 export const AGENT_TOOL_PROMPT_ESTIMATE_TEXT = createAgentToolPromptEstimateText({ browserJsEnabled: true });
 
 function browserReplDescription(browserJsEnabled: boolean) {
-  const helpers = browserJsEnabled
-    ? 'observe, query, click, fill, press, scroll, waitFor, browserjs, sandbox, pickElement'
-    : 'observe, query, click, fill, press, scroll, waitFor, sandbox, pickElement';
-  return `Run browser REPL JavaScript. Helpers: ${helpers}.`;
+  const helpers = browserReplToolHelperNames(browserJsEnabled).join(', ');
+  const browserJsNote = browserJsEnabled
+    ? ' browserjs(codeOrFn, args) is available after user consent for advanced page script evidence; not for reading or regular operations.'
+    : '';
+  return (
+    'Advanced REPL for operations browser cannot express. ' +
+    'Use only for batch actions, complex forms, debugging, or when browser fails. ' +
+    `Helpers: ${helpers}.${browserJsNote} ` +
+    'Page reading: readVisibleText(), readLinksAndButtons(), listInteractiveElements(), queryText("text") cover main document, open shadow roots, and same-origin iframes; cross-origin frames show metadata. ' +
+    'Element indexes from observe/query are scoped to one call; never reuse across calls. ' +
+    'navigate(input) delegates to navigate; switchTab or open target:"new" updates task target for subsequent helpers in the same call. ' +
+    'batch(actions) runs fill/click/press/scroll/waitFor with per-step evidence. ' +
+    'fillForm({ fields, confidence?, dryRun? }) matches by label/placeholder/aria-label/name/id; fills high-confidence unique fields only; ambiguous fields are reported. ' +
+    'sandbox() is for data processing with fetch. ' +
+    'Return concise serializable evidence; no DOM/function/Window/Event/cycles or large dataUrl/logs.'
+  );
 }
 
 export function createAgentTools(options: AgentToolOptions) {
   const browserJsEnabled = options.browserJsEnabled !== false;
-  const runtime = new AgentToolRuntime(options.sendMessage, options.windowId, options.runSandbox ?? runBrowserReplInSandbox, browserJsEnabled);
+  const runtime = new AgentToolRuntime({
+    sendMessage: options.sendMessage,
+    windowId: options.windowId,
+    targetTabId: options.targetTabId,
+    getTargetTabId: options.getTargetTabId,
+    onTargetChanged: options.onTargetChanged,
+    onTargetUnavailable: options.onTargetUnavailable,
+    runSandbox: options.runSandbox ?? runBrowserReplInSandbox,
+    browserJsEnabled,
+  });
   const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId);
   const tools = {
     getDocument: tool<GetDocumentInput, GetDocumentResult>({
@@ -57,13 +95,18 @@ export function createAgentTools(options: AgentToolOptions) {
       toModelOutput: extractImageToModelOutput,
     }),
     navigate: tool<NavigateInput, NavigateResult>({
-      description: 'Navigate browser tabs: open URLs, back, forward, reload, list tabs, switch tab, close tab, or read current tab.',
+      description: navigateDescription,
       inputSchema: jsonSchema<NavigateInput>(navigateInputJsonSchema, validator(parseNavigateInput)),
       execute: withRunLog('navigate', (input, abortSignal) => runtime.navigate(input, abortSignal)),
     }),
+    browser: tool<BrowserInput, BrowserResult>({
+      description: browserDescription,
+      inputSchema: jsonSchema<BrowserInput>(browserInputJsonSchema, validator(parseBrowserInput)),
+      execute: withRunLog('browser', (input, abortSignal) => runtime.browser(input, abortSignal)),
+    }),
     browserRepl: tool<BrowserReplInput, BrowserReplResult>({
       description: browserReplDescription(browserJsEnabled),
-      inputSchema: jsonSchema<BrowserReplInput>(browserReplInputJsonSchema, validator(parseBrowserReplInput)),
+      inputSchema: jsonSchema<BrowserReplInput>(createBrowserReplInputJsonSchema({ browserJsEnabled }), validator(parseBrowserReplInput)),
       execute: withRunLog('browserRepl', (input, abortSignal) => runtime.browserRepl(input, abortSignal)),
     }),
   };
@@ -72,7 +115,7 @@ export function createAgentTools(options: AgentToolOptions) {
   return {
     ...tools,
     debugger: tool<DebuggerInput, DebuggerResult>({
-      description: 'Read console logs, network logs, failed requests, evaluate main-world JavaScript, or call CDP. Cookies are blocked.',
+      description: debuggerDescription,
       inputSchema: jsonSchema<DebuggerInput>(debuggerInputJsonSchema, validator(parseDebuggerInput)),
       execute: withRunLog('debugger', (input, abortSignal) => runtime.debugger(input, abortSignal)),
     }),
@@ -84,15 +127,39 @@ class AgentToolRuntime {
   private readonly windowId?: number;
   private readonly runSandbox: RunSandbox;
   private readonly browserJsEnabled: boolean;
+  private readonly pageExecutor: ReturnType<typeof createBrowserReplPageExecutor>;
+  private readonly getTargetTabId?: () => number | undefined;
+  private readonly onTargetChanged?: (change: TargetChanged) => Promise<void>;
+  private readonly onTargetUnavailable?: (error: string) => Promise<void>;
+  private targetTabId?: number;
 
-  constructor(sendMessage: SendMessage, windowId: number | undefined, runSandbox: RunSandbox, browserJsEnabled: boolean) {
-    this.sendMessage = sendMessage;
-    this.windowId = windowId;
-    this.runSandbox = runSandbox;
-    this.browserJsEnabled = browserJsEnabled;
+  constructor(options: {
+    sendMessage: SendMessage;
+    windowId?: number;
+    targetTabId?: number;
+    getTargetTabId?: () => number | undefined;
+    onTargetChanged?: (change: TargetChanged) => Promise<void>;
+    onTargetUnavailable?: (error: string) => Promise<void>;
+    runSandbox: RunSandbox;
+    browserJsEnabled: boolean;
+  }) {
+    this.sendMessage = options.sendMessage;
+    this.windowId = options.windowId;
+    this.targetTabId = options.targetTabId;
+    this.getTargetTabId = options.getTargetTabId;
+    this.onTargetChanged = options.onTargetChanged;
+    this.onTargetUnavailable = options.onTargetUnavailable;
+    this.runSandbox = options.runSandbox;
+    this.browserJsEnabled = options.browserJsEnabled;
+    this.pageExecutor = createBrowserReplPageExecutor({
+      sendMessage: this.sendMessage,
+      readTargetTabId: () => this.currentTargetTabId(),
+      errorFromResponse: (message) => this.errorFromResponse(message),
+    });
   }
 
   getDocument(input: GetDocumentInput, abortSignal?: AbortSignal) {
+    if (input.source === 'currentPage' && input.tabId !== undefined) this.assertInputTabId('getDocument', input.tabId);
     return createGetDocumentController({
       getCurrentTabId: () => this.getCurrentTabId(),
       executeInTab: (tabId, nextInput) => this.extractPageDocument(tabId, nextInput, abortSignal),
@@ -101,6 +168,7 @@ class AgentToolRuntime {
   }
 
   extractImage(input: ExtractImageInput, abortSignal?: AbortSignal) {
+    if (input.source !== 'viewport' && input.tabId !== undefined) this.assertInputTabId('extractImage', input.tabId);
     return createExtractImageController({
       getCurrentTabId: () => this.getCurrentTabId(),
       captureVisibleTab: (nextInput) => this.captureVisibleTab(nextInput, abortSignal),
@@ -109,221 +177,117 @@ class AgentToolRuntime {
   }
 
   async navigate(input: NavigateInput, abortSignal?: AbortSignal) {
-    const response = await abortable(() => this.sendMessage({ type: navigateRequestType, input, windowId: this.windowId }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw new Error(response.error);
-    return response as NavigateResult;
+    this.assertNavigateTabId(input);
+    const response = await abortable(() => this.sendMessage({ type: navigateRequestType, input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
+    if (isRecord(response) && typeof response.error === 'string') throw await this.navigateError(input, response.error);
+    const result = response as NavigateResult;
+    await this.applyNavigateTargetChange(input, result);
+    return result;
+  }
+
+  async browser(input: BrowserInput, abortSignal?: AbortSignal) {
+    if (input.tabId !== undefined) this.assertInputTabId('browser', input.tabId);
+    const tabId = input.tabId ?? (await this.getCurrentTabId());
+    return this.pageExecutor.executePageCommand(tabId, { helper: 'browser', args: [input], cancelKey: crypto.randomUUID(), timeoutMs: input.timeoutMs ?? DEFAULT_BROWSER_TOOL_TIMEOUT_MS }, abortSignal) as Promise<BrowserResult>;
   }
 
   browserRepl(input: BrowserReplInput, abortSignal?: AbortSignal) {
+    if (input.tabId !== undefined) this.assertInputTabId('browserRepl', input.tabId);
     return createBrowserReplController({
       getCurrentTabId: () => this.getCurrentTabId(),
-      executePageCommand: (tabId, command, nextSignal) => this.executePageCommand(tabId, command, nextSignal),
+      executePageCommand: (tabId, command, nextSignal) => this.pageExecutor.executePageCommand(tabId, command, nextSignal),
       runSandbox: this.runSandbox,
+      navigate: (nextInput, nextSignal) => this.navigate(parseNavigateInput(nextInput), nextSignal),
       browserJsEnabled: this.browserJsEnabled,
     }).run(input, abortSignal);
   }
 
   async debugger(input: DebuggerInput, abortSignal?: AbortSignal) {
-    const response = await abortable(() => this.sendMessage({ type: debuggerRequestType, input, windowId: this.windowId }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw new Error(response.error);
+    if (input.tabId !== undefined) this.assertInputTabId('debugger', input.tabId);
+    const response = await abortable(() => this.sendMessage({ type: debuggerRequestType, input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
+    if (isRecord(response) && typeof response.error === 'string') throw await this.errorFromResponse(response.error);
     return response as DebuggerResult;
   }
 
+  private currentTargetTabId() { return this.getTargetTabId?.() ?? this.targetTabId; }
   private async getCurrentTabId() {
+    const targetTabId = this.currentTargetTabId();
+    if (targetTabId !== undefined) return targetTabId;
     const tab = await this.sendMessage({ type: 'taber.background.currentTab', windowId: this.windowId });
-    if (isRecord(tab) && typeof tab.error === 'string') throw new Error(tab.error);
+    if (isRecord(tab) && typeof tab.error === 'string') throw await this.errorFromResponse(tab.error);
     if (!isRecord(tab) || !Number.isInteger(tab.id) || Number(tab.id) <= 0) throw new Error('No active tab in the side panel window');
     return Number(tab.id);
   }
 
   private async extractPageDocument(tabId: number, input: GetDocumentInput, abortSignal?: AbortSignal) {
-    const response = await abortable(() => this.sendMessage({ type: 'taber.getDocument.extractPage', tabId, input }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw normalizePageExecutionError(new Error(response.error));
+    const response = await abortable(() => this.sendMessage({ type: 'taber.getDocument.extractPage', tabId, input, targetTabId: this.currentTargetTabId() }), abortSignal);
+    if (isRecord(response) && typeof response.error === 'string') throw normalizePageExecutionError(await this.errorFromResponse(response.error));
     return response as PageDocument;
   }
 
   private async captureVisibleTab(input: ExtractImageInput, abortSignal?: AbortSignal) {
-    const response = await abortable(() => this.sendMessage({ type: 'taber.extractImage.captureVisibleTab', input, windowId: this.windowId }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw new Error(response.error);
+    const response = await abortable(() => this.sendMessage({ type: 'taber.extractImage.captureVisibleTab', input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
+    if (isRecord(response) && typeof response.error === 'string') throw await this.errorFromResponse(response.error);
     return String(response);
   }
 
   private async extractPageImage(tabId: number, input: ExtractImageInput, abortSignal?: AbortSignal) {
-    const response = await abortable(() => this.sendMessage({ type: 'taber.extractImage.extractPage', tabId, input }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw normalizePageExecutionError(new Error(response.error));
+    const response = await abortable(() => this.sendMessage({ type: 'taber.extractImage.extractPage', tabId, input, targetTabId: this.currentTargetTabId() }), abortSignal);
+    if (isRecord(response) && typeof response.error === 'string') throw normalizePageExecutionError(await this.errorFromResponse(response.error));
     return response as ExtractImageResult;
   }
 
-  private async executePageCommand(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    try {
-      return await this.executeUserScriptCommand(tabId, command, abortSignal);
-    } catch (error) {
-      if (!DEBUGGER_ENABLED || !canUseCdpFallback(command, error)) throw error;
-      try {
-        return await executeBrowserReplCdpFallback({
-          tabId,
-          command,
-          runPageCommand: (fallbackCommand) => this.executeUserScriptCommand(tabId, fallbackCommand, abortSignal),
-          callChromeApi: (action, args) => this.callChromeApi(action, args, abortSignal),
-          abortSignal,
-        });
-      } catch (fallbackError) {
-        throw new Error(`browserRepl ${command.helper} failed; CDP fallback failed: ${stringifyError(fallbackError)}; original: ${stringifyError(error)}`);
-      }
+  private assertInputTabId(toolName: string, tabId: number) {
+    const targetTabId = this.currentTargetTabId();
+    if (targetTabId === undefined || tabId === targetTabId) return;
+    throw new Error(`${toolName} is locked to target tab ${targetTabId}; received tabId ${tabId}. Use navigate.switchTab to change the task target.`);
+  }
+
+  private assertNavigateTabId(input: NavigateInput) {
+    if (input.tabId === undefined || input.action === 'switchTab') return;
+    this.assertInputTabId(`navigate.${input.action}`, input.tabId);
+  }
+
+  private async applyNavigateTargetChange(input: NavigateInput, result: NavigateResult) {
+    if (input.action === 'open' && (input.target ?? 'current') === 'new') {
+      await this.updateTargetFromResult('openNew', result.tab);
+      return;
+    }
+    if (input.action === 'switchTab') {
+      await this.updateTargetFromResult('switchTab', result.tab);
+      return;
+    }
+    if (input.action === 'closeTab' && result.tabId !== undefined && result.tabId === this.currentTargetTabId()) {
+      throw await this.targetUnavailableError(`Target tab ${result.tabId} was closed; the task cannot continue.`);
     }
   }
 
-  private async executeUserScriptCommand(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal): Promise<unknown> {
-    const cleanupAbort = this.cancelPageCommandOnAbort(tabId, command, abortSignal);
-    const cleanupBrowserJs = this.terminateBrowserJsOnAbort(tabId, command, abortSignal);
-    try {
-      const injection = {
-        target: { tabId },
-        js: [{ code: createBrowserReplUserScript(command) }],
-        taberTimeoutMs: (command.timeoutMs ?? DEFAULT_BROWSER_REPL_TIMEOUT_MS) + 1_000,
-        ...(command.helper === 'browserjs' ? { world: 'MAIN' } : {}),
-      };
-      const response = await abortable(
-        () => this.callChromeApi('userScripts.execute', [injection]),
-        abortSignal,
-      ).catch((error) => {
-        if (isUserScriptsUnavailable(error)) return undefined;
-        throw normalizePageExecutionError(error);
-      });
-      if (isRecord(response) && typeof response.error === 'string') {
-        if (response.error.includes('chrome.userScripts') || response.error.includes('did not return a result')) return this.executePageFallback(tabId, command, abortSignal);
-        throw new Error(response.error);
-      }
-      const result = Array.isArray(response) ? response[0]?.result : undefined;
-      if (!isRecord(result)) return this.executePageFallback(tabId, command, abortSignal);
-      if (result.ok === false) throw new Error(typeof result.error === 'string' ? result.error : 'browserRepl page execution failed');
-      return result.value;
-    } finally {
-      cleanupAbort();
-      cleanupBrowserJs();
+  private async updateTargetFromResult(reason: TargetChangeReason, tab: NavigateResult['tab']) {
+    if (!tab?.id) return;
+    const fromTabId = this.currentTargetTabId();
+    this.targetTabId = tab.id;
+    if (fromTabId === tab.id) return;
+    await this.onTargetChanged?.({ fromTabId, toTabId: tab.id, reason, tab });
+  }
+
+  private async navigateError(input: NavigateInput, message: string) {
+    if (this.currentTargetTabId() !== undefined && input.action === 'open' && message.startsWith('Tab is not operable:')) {
+      return this.targetUnavailableError(message.replace(/^Tab/, 'Target tab'));
     }
-  }
-
-  private executePageFallback(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    const fallback = browserReplFallbackFor(command);
-    if (fallback === 'browserjsCdp') {
-      if (DEBUGGER_ENABLED) return this.executeBrowserJsCdp(tabId, command, abortSignal);
-      throw new Error(userScriptsErrorMessage());
+    if (this.currentTargetTabId() !== undefined && (input.action === 'back' || input.action === 'forward' || input.action === 'reload' || input.action === 'currentTab') && message.startsWith('Tab is not operable:')) {
+      return this.targetUnavailableError(message.replace(/^Tab/, 'Target tab'));
     }
-    if (fallback === 'pressCdp') {
-      if (DEBUGGER_ENABLED) return this.executeCdpPageCommand(tabId, command, abortSignal);
-      throw new Error('press native fallback requires the Taber debug build');
-    }
-    return this.executeScriptingPageCommand(tabId, command, abortSignal);
+    return this.errorFromResponse(message);
   }
 
-  private executeCdpPageCommand(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    return executeBrowserReplCdpFallback({
-      tabId,
-      command,
-      abortSignal,
-      runPageCommand: (fallbackCommand) => this.executeUserScriptCommand(tabId, fallbackCommand, abortSignal),
-      callChromeApi: (action, args) => this.callChromeApi(action, args, abortSignal),
-    });
+  private async errorFromResponse(message: string) {
+    if (isTargetUnavailableMessage(message)) return this.targetUnavailableError(message);
+    return new Error(message);
   }
 
-  private async executeBrowserJsCdp(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    const debuggee = { tabId };
-    const shouldDetach = await this.attachDebugger(debuggee, abortSignal);
-    try {
-      const response = await this.evaluateBrowserJs(debuggee, command, abortSignal);
-      const result = isRecord(response) && isRecord(response.result) ? response.result.value : undefined;
-      if (!isRecord(result)) throw new Error('browserjs CDP fallback returned no result');
-      if (result.ok === false) throw new Error(typeof result.error === 'string' ? result.error : 'browserjs CDP fallback failed');
-      return result.value;
-    } finally {
-      if (shouldDetach) await this.callChromeApi('debugger.detach', [debuggee]).catch(() => undefined);
-    }
-  }
-
-  private async attachDebugger(debuggee: { tabId: number }, abortSignal?: AbortSignal) {
-    if (abortSignal?.aborted) throw new Error('Task aborted');
-    let aborted = false;
-    const abort = () => { aborted = true; };
-    abortSignal?.addEventListener('abort', abort, { once: true });
-    try {
-      const attachedHere = await this.callChromeApi('debugger.attach', [debuggee, '1.3']).then(
-        () => true,
-        (error) => {
-          if (String(error).includes('Another debugger') || String(error).includes('already attached')) return false;
-          throw error;
-        },
-      );
-      if (aborted || abortSignal?.aborted) {
-        await this.callChromeApi('debugger.sendCommand', [debuggee, 'Runtime.terminateExecution']).catch(() => undefined);
-        if (attachedHere) await this.callChromeApi('debugger.detach', [debuggee]).catch(() => undefined);
-        throw new Error('Task aborted');
-      }
-      return attachedHere;
-    } finally {
-      abortSignal?.removeEventListener('abort', abort);
-    }
-  }
-
-  private evaluateBrowserJs(debuggee: { tabId: number }, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    if (abortSignal?.aborted) return Promise.reject(new Error('Task aborted'));
-    const timeoutMs = command.timeoutMs ?? DEFAULT_BROWSER_REPL_TIMEOUT_MS;
-    let timeoutId: ReturnType<typeof setTimeout>;
-    return new Promise<unknown>((resolve, reject) => {
-      let settled = false;
-      const cleanup = () => { clearTimeout(timeoutId); abortSignal?.removeEventListener('abort', abort); };
-      const finish = (callback: () => void) => { if (!settled) { settled = true; cleanup(); callback(); } };
-      const terminate = () => void this.callChromeApi('debugger.sendCommand', [debuggee, 'Runtime.terminateExecution']).catch(() => undefined);
-      const fail = (error: Error) => finish(() => { terminate(); reject(error); });
-      const abort = () => fail(new Error('Task aborted'));
-      abortSignal?.addEventListener('abort', abort, { once: true });
-      timeoutId = setTimeout(() => fail(new Error(`browserjs timed out after ${timeoutMs}ms`)), timeoutMs);
-      void this.callChromeApi('debugger.sendCommand', [debuggee, 'Runtime.evaluate', { expression: createBrowserReplUserScript(command), awaitPromise: true, returnByValue: true }]).then(
-        (value) => finish(() => resolve(value)),
-        (error) => fail(error instanceof Error ? error : new Error(String(error))),
-      );
-    });
-  }
-
-  private async executeScriptingPageCommand(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    const cleanupAbort = this.cancelPageCommandOnAbort(tabId, command, abortSignal);
-    try {
-      const response = await abortable(() => this.sendMessage({ type: 'taber.browserRepl.scriptingCommand', tabId, command }), abortSignal);
-      if (isRecord(response) && typeof response.error === 'string') throw normalizePageExecutionError(new Error(response.error));
-      return response;
-    } finally {
-      cleanupAbort();
-    }
-  }
-
-  private cancelPageCommandOnAbort(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    if (!abortSignal || !command.cancelKey) return () => undefined;
-    const cancel = () => { void this.sendMessage({ type: 'taber.browserRepl.cancelPageCommand', tabId, cancelKey: command.cancelKey }).catch(() => undefined); };
-    abortSignal.addEventListener('abort', cancel, { once: true });
-    return () => abortSignal.removeEventListener('abort', cancel);
-  }
-
-  private terminateBrowserJsOnAbort(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal) {
-    if (!DEBUGGER_ENABLED || !abortSignal || command.helper !== 'browserjs') return () => undefined;
-    const terminate = () => void this.terminatePageExecution(tabId).catch(() => undefined);
-    abortSignal.addEventListener('abort', terminate, { once: true });
-    return () => abortSignal.removeEventListener('abort', terminate);
-  }
-
-  private async terminatePageExecution(tabId: number) {
-    const debuggee = { tabId };
-    const shouldDetach = await this.callChromeApi('debugger.attach', [debuggee, '1.3']).then(() => true, () => false);
-    try {
-      await this.callChromeApi('debugger.sendCommand', [debuggee, 'Runtime.terminateExecution']);
-    } finally {
-      if (shouldDetach) await this.callChromeApi('debugger.detach', [debuggee]).catch(() => undefined);
-    }
-  }
-
-  private async callChromeApi(action: ChromeApiAction, args: unknown[], abortSignal?: AbortSignal) {
-    const response = await abortable(() => this.sendMessage({ type: chromeApiRequestType, action, args }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw new Error(response.error);
-    return response;
+  private async targetUnavailableError(message: string) {
+    await this.onTargetUnavailable?.(message);
+    return new Error(message);
   }
 }
 
@@ -349,71 +313,6 @@ function validator<T>(parse: (value: unknown) => T) {
   return { validate(value: unknown) { try { return { success: true as const, value: parse(value) }; } catch (error) { return { success: false as const, error: error instanceof Error ? error : new Error(String(error)) }; } } };
 }
 
-function extractImageToModelOutput({ output }: { output: ExtractImageResult }) {
-  if (output.ok === false || !output.dataUrl) return { type: 'json' as const, value: toJsonValue(output) };
-
-  const file = fileDataFromDataUrl(output.dataUrl, output.mediaType);
-  if (!file) return { type: 'json' as const, value: toJsonValue(output) };
-  return {
-    type: 'content' as const,
-    value: [
-      { type: 'text' as const, text: `extractImage: ${JSON.stringify(imageMetadata(output))}` },
-      { type: 'file-data' as const, mediaType: file.mediaType, data: file.data },
-    ],
-  };
-}
-
-function imageMetadata(output: Exclude<ExtractImageResult, { ok: false }>) {
-  const { dataUrl: _dataUrl, ...metadata } = output;
-  return metadata;
-}
-
-function fileDataFromDataUrl(dataUrl: string, fallbackMediaType?: string) {
-  const match = /^data:([^,]*),(.*)$/s.exec(dataUrl);
-  if (!match) return undefined;
-  const parsedMediaType = match[1].split(';')[0];
-  const mediaType = fallbackMediaType ?? (parsedMediaType || 'application/octet-stream');
-  const data = /(^|;)base64(?:;|$)/i.test(match[1]) ? match[2] : bytesToBase64(dataUrlPayloadBytes(match[2]));
-  return { mediaType, data };
-}
-
-function dataUrlPayloadBytes(payload: string) {
-  const bytes: number[] = [];
-  let text = '';
-  const textEncoder = new TextEncoder();
-  const flushText = () => {
-    if (!text) return;
-    bytes.push(...textEncoder.encode(text));
-    text = '';
-  };
-  for (let index = 0; index < payload.length; index += 1) {
-    if (payload[index] !== '%' || !isHexByte(payload.slice(index + 1, index + 3))) {
-      text += payload[index];
-      continue;
-    }
-    flushText();
-    bytes.push(Number.parseInt(payload.slice(index + 1, index + 3), 16));
-    index += 2;
-  }
-  flushText();
-  return Uint8Array.from(bytes);
-}
-
-function bytesToBase64(bytes: Uint8Array) {
-  const chunkSize = 0x8000;
-  let binary = '';
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
-  return btoa(binary);
-}
-
-function isHexByte(value: string) {
-  return /^[\da-f]{2}$/i.test(value);
-}
-
-function toJsonValue(value: unknown): JSONValue {
-  return JSON.parse(JSON.stringify(value)) as JSONValue;
-}
-
 function abortable<T>(run: () => Promise<T>, abortSignal?: AbortSignal) {
   if (abortSignal?.aborted) return Promise.reject(new Error('Task aborted'));
   const promise = run();
@@ -434,9 +333,8 @@ function normalizePageExecutionError(error: unknown) {
   return isPageAccessError(error) ? new Error(pageAccessErrorMessage()) : error instanceof Error ? error : new Error(String(error));
 }
 
-function isUserScriptsUnavailable(error: unknown) {
-  const message = stringifyError(error);
-  return message.includes('chrome.userScripts') || message.includes('did not return a result');
+function isTargetUnavailableMessage(message: string) {
+  return /^Target tab (?:is no longer available|is not operable|\d+ was closed)/.test(message);
 }
 
 function stringifyError(error: unknown) {
