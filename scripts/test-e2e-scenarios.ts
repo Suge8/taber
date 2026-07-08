@@ -18,7 +18,7 @@ import type { ExtractedTable, PageDocument } from '../lib/get-document.ts';
 import type { ExtractImageInput, ExtractImageResult } from '../lib/extract-image.ts';
 
 async function testFixedToolRegistration(harness: E2EHarness) {
-  assert.deepEqual(new Set(Object.keys(harness.tools)), new Set(['getDocument', 'extractImage', 'navigate', 'browserRepl']));
+  assert.deepEqual(new Set(Object.keys(harness.tools)), new Set(['getDocument', 'extractImage', 'navigate', 'browser', 'browserRepl']));
 }
 
 async function runFiveMvpScenarios(harness: E2EHarness) {
@@ -50,26 +50,32 @@ async function runFiveMvpScenarios(harness: E2EHarness) {
   const collected = [];
   for (const url of urls) {
     await harness.runTool('navigate', { action: 'open', url, target: 'current' });
-    const result = await harness.runTool('browserRepl', {
-      code: 'return await browserjs("return { title: document.title, url: location.href };");',
-    });
-    collected.push(result.value);
+    const result = await harness.runTool('getDocument', { source: 'currentPage', mode: 'page' });
+    collected.push({ title: result.title, url: result.url });
   }
   assert.deepEqual(harness.visitedUrls.slice(-3), urls);
-  assert.deepEqual(collected.map((item) => readRecord(item)?.url), urls);
-  assert.equal(readRecord(collected[2])?.title, 'Fixture C');
+  assert.deepEqual(collected.map((item) => item.url), urls);
+  assert.equal(collected[2].title, 'Fixture C');
 
   await harness.runTool('navigate', { action: 'open', url: 'https://fixture.test/form', target: 'current' });
-  const formResult = await harness.runTool('browserRepl', {
-    code: `
-      await observe();
-      await fill(1, 'user@example.test');
-      await fill(2, 'Ada Lovelace');
-      await click(3);
-      return await waitFor({ text: 'Submitted user@example.test' });
-    `,
-  });
-  assert.deepEqual(formResult.value, { matched: true, text: 'Submitted user@example.test by Ada Lovelace' });
+  const emailFill = await harness.runTool('browser', { action: 'fill', target: { label: 'Email' }, value: 'user@example.test' });
+  const nameFill = await harness.runTool('browser', { action: 'fill', target: { label: 'Name' }, value: 'Ada Lovelace' });
+  const formSnapshot = await harness.runTool('browser', { action: 'snapshot' });
+  const submitRef = formSnapshot.state.elements.find((item: Record<string, unknown>) => item.name === 'Submit')?.ref;
+  const refSubmit = await harness.runTool('browser', { action: 'click', target: { ref: submitRef } });
+  const staleSubmit = await harness.runTool('browser', { action: 'click', target: { ref: submitRef } });
+  const textSubmit = await harness.runTool('browser', { action: 'click', target: { text: 'Submit' } });
+  const roleSubmit = await harness.runTool('browser', { action: 'click', target: { role: 'button', name: 'Submit' } });
+  const formResult = await harness.runTool('browserRepl', { code: 'return await waitFor("Submitted user@example.test")' });
+  assert.equal(emailFill.ok, true);
+  assert.equal(nameFill.ok, true);
+  assert.equal(refSubmit.ok, true);
+  assert.equal(staleSubmit.ok, false);
+  assert.equal(staleSubmit.code, 'STALE_REF');
+  assert.equal(textSubmit.ok, true);
+  assert.equal(roleSubmit.ok, true);
+  assert.match(String(textSubmit.state.text), /Submitted user@example.test by Ada Lovelace/);
+  assert.equal(formResult.value.text, 'Submitted user@example.test by Ada Lovelace');
   assert.deepEqual(harness.pageFor('https://fixture.test/form').form, { email: 'user@example.test', name: 'Ada Lovelace', submitted: true });
 
   await appendAgentEvent({ sessionId: harness.sessionId, type: 'task.completed', payload: { taskId: 'task-e2e', text: summary }, now: 99 });
@@ -78,7 +84,7 @@ async function runFiveMvpScenarios(harness: E2EHarness) {
 async function testPersistedRecovery(sessionId: number) {
   const snapshot = await readSessionSnapshot(sessionId);
   const toolNames = new Set(snapshot.toolRuns.map((run) => run.toolName));
-  assert.deepEqual([...toolNames].sort(), ['browserRepl', 'extractImage', 'getDocument', 'navigate']);
+  assert.deepEqual([...toolNames].sort(), ['browser', 'browserRepl', 'extractImage', 'getDocument', 'navigate']);
 
   const eventTypes = snapshot.agentEvents.map((event) => event.type);
   assert(eventTypes.includes('task.started'));
@@ -132,7 +138,7 @@ async function createE2EHarness(): Promise<E2EHarness> {
   };
 }
 
-type ToolName = 'getDocument' | 'extractImage' | 'navigate' | 'browserRepl';
+type ToolName = 'getDocument' | 'extractImage' | 'navigate' | 'browser' | 'browserRepl';
 type E2EHarness = {
   broker: FakeBrowserBroker;
   sessionId: number;
@@ -160,6 +166,7 @@ class FakeBrowserBroker {
     tabs: this.tabsApi as never,
     scripting: { executeScript: async () => { throw new Error('chrome.scripting API is unavailable in deterministic E2E'); } },
     userScripts: { execute: (injection: unknown) => this.executeUserScript(injection) },
+    webNavigation: this.webNavigationApi as never,
     debugger: this.debuggerApi as never,
   });
   private readonly navigateController = createNavigateController({ tabs: this.tabsApi as never, webNavigation: this.webNavigationApi as never });
@@ -249,6 +256,8 @@ class FakePage {
   readonly title: string;
   private readonly content: string;
   private readonly tables: ExtractedTable[];
+  private snapshotRefs = new Map<string, string>();
+  private snapshotSeq = 0;
 
   constructor(url: string, title: string, content: string, tables: ExtractedTable[] = []) {
     this.url = url;
@@ -279,6 +288,9 @@ class FakePage {
     if (command.helper === 'fill') return this.fill(command.args[0], String(command.args[1] ?? ''));
     if (command.helper === 'click') return this.click(command.args[0]);
     if (command.helper === 'waitFor') return this.waitFor(readRecord(command.args[0]));
+    if (command.helper === 'batch') return this.batch(Array.isArray(command.args[0]) ? command.args[0] : [], readRecord(command.args[1]));
+    if (command.helper === 'fillForm') return this.fillForm(readRecord(command.args[0]));
+    if (command.helper === 'browser') return this.browser(readRecord(command.args[0]));
     if (command.helper === 'query') return { summary: { title: this.title, url: this.url }, elements: this.elements() };
     throw new Error(`Unsupported fake page command: ${command.helper}`);
   }
@@ -305,6 +317,49 @@ class FakePage {
     ];
   }
 
+  private browser(input: Record<string, unknown> | undefined) {
+    const action = typeof input?.action === 'string' ? input.action : '';
+    if (action === 'snapshot') return { ok: true, action, state: this.browserState() };
+    const target = readRecord(input?.target);
+    const staleRef = typeof target?.ref === 'string' && !this.snapshotRefs.has(target.ref);
+    const selector = this.browserSelector(target);
+    if (!selector) return { ok: false, action, code: staleRef ? 'STALE_REF' : 'NO_TARGET', message: staleRef ? 'Ref is stale' : 'No target', state: this.browserState() };
+    if (action === 'fill') {
+      this.fill(selector, String(input?.value ?? ''));
+      return { ok: true, action, evidence: { selector }, state: this.browserState() };
+    }
+    if (action === 'click') {
+      this.click(selector);
+      return { ok: true, action, evidence: { selector }, state: this.browserState() };
+    }
+    return { ok: false, action, code: 'ACTION_FAILED', message: `Unsupported browser action: ${action}`, state: this.browserState() };
+  }
+
+  private browserSelector(target: Record<string, unknown> | undefined) {
+    if (!target) return undefined;
+    if (typeof target.ref === 'string') return this.snapshotRefs.get(target.ref);
+    const ref = readRecord(target.ref);
+    if (ref?.selector) return String(ref.selector);
+    if (typeof target.selector === 'string') return target.selector;
+    if (typeof target.label === 'string') return this.fieldSelector(target.label);
+    if (target.text === 'Submit') return '#submit';
+    if (target.role === 'button' && target.name === 'Submit') return '#submit';
+    return undefined;
+  }
+
+  private browserState() {
+    this.snapshotSeq += 1;
+    const refs = new Map<string, string>();
+    const elements = this.elements().map((item, offset) => {
+      const ref = `r${this.snapshotSeq}.${offset + 1}`;
+      refs.set(ref, item.ref.selector);
+      const { ref: _internalRef, ...element } = item;
+      return { ...element, ref, role: item.tag === 'button' ? 'button' : 'textbox' };
+    });
+    this.snapshotRefs = refs;
+    return { title: this.title, url: this.url, text: this.text(), elements };
+  }
+
   private fill(refValue: unknown, text: string) {
     const ref = readElementRef(refValue);
     if (ref.selector === '#email') this.form.email = text;
@@ -324,6 +379,52 @@ class FakePage {
     const text = typeof options?.text === 'string' ? options.text : '';
     if (text && !this.text().includes(text)) throw new Error(`waitFor timed out after ${options?.timeoutMs ?? 8000}ms`);
     return { matched: true, text: this.text().match(/Submitted[^\n]*/)?.[0] };
+  }
+
+  private fillForm(options: Record<string, unknown> | undefined) {
+    const fields = readRecord(options?.fields) ?? {};
+    const dryRun = options?.dryRun === true;
+    const filled = [];
+    const missing = [];
+    for (const [field, value] of Object.entries(fields)) {
+      const selector = this.fieldSelector(field);
+      if (!selector) {
+        missing.push({ field });
+        continue;
+      }
+      if (!dryRun) this.fill(selector, String(value));
+      filled.push({ field, selector, dryRun, finalValue: dryRun ? undefined : String(value) });
+    }
+    return { ok: missing.length === 0, filled, missing, ambiguous: [] };
+  }
+
+  private batch(actions: unknown[], options: Record<string, unknown> | undefined) {
+    const steps = [];
+    const stopOnError = options?.continueOnError === true || options?.stopOnError === false ? false : true;
+    for (const actionValue of actions) {
+      const action = readRecord(actionValue) ?? {};
+      try {
+        const result = this.runBatchAction(action);
+        steps.push({ action: action.action, selector: action.selector, ok: true, ...result });
+      } catch (error) {
+        steps.push({ action: action.action, selector: action.selector, ok: false, error: error instanceof Error ? error.message : String(error) });
+        if (stopOnError) return { ok: false, steps, error: 'One or more batch steps failed' };
+      }
+    }
+    return { ok: steps.every((step) => step.ok), steps };
+  }
+
+  private runBatchAction(action: Record<string, unknown>) {
+    if (action.action === 'fill') return this.fill(action.selector ?? action.target, String(action.value ?? ''));
+    if (action.action === 'click') return this.click(action.selector ?? action.target);
+    if (action.action === 'waitFor') return this.waitFor(action);
+    throw new Error(`Unsupported batch action: ${String(action.action)}`);
+  }
+
+  private fieldSelector(field: string) {
+    if (/email/i.test(field)) return '#email';
+    if (/name/i.test(field)) return '#name';
+    return undefined;
   }
 }
 
@@ -446,6 +547,10 @@ class FakeWebNavigationApi {
 
   completed(details: { tabId: number; frameId: number; url?: string }) {
     this.onCompleted.emit(details);
+  }
+
+  async getAllFrames(details: { tabId: number }) {
+    return [{ tabId: details.tabId, frameId: 0, parentFrameId: -1, url: 'https://fixture.test/form' }];
   }
 }
 
@@ -637,6 +742,7 @@ function element(index: number, selector: string, tagName: string, name: string)
 }
 
 function readElementRef(value: unknown) {
+  if (typeof value === 'string') return { selector: value };
   const ref = readRecord(value);
   if (!ref || typeof ref.selector !== 'string') throw new Error('Missing element ref');
   return ref as { selector: string };
