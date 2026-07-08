@@ -1,3 +1,5 @@
+import { cloneBoundaryError, normalizeBrowserJsCode } from '../../lib/browser-repl-code.ts';
+
 type RunMessage = { type: 'taber.sandbox.run'; runId: string; code: string; helperNames: string[] };
 type HelperResult = {
   type: 'taber.sandbox.helperResult';
@@ -24,9 +26,9 @@ async function runCode(message: RunMessage) {
     const names = [...helperNames, 'sandbox'];
     const values = [...helperNames.map((name) => helpers[name]), runNestedSandbox];
     const result = await new AsyncFunction(...names, `"use strict";\n${message.code}`)(...values);
-    window.parent.postMessage({ type: 'taber.sandbox.result', runId: message.runId, value: result }, '*');
+    postResult(message.runId, result);
   } catch (error) {
-    window.parent.postMessage({ type: 'taber.sandbox.error', runId: message.runId, error: stringifyError(error) }, '*');
+    postError(message.runId, stringifyError(error));
   }
 }
 
@@ -41,9 +43,32 @@ function createRemoteHelper(runId: string, name: string) {
       else reject(new Error(event.data.error ?? `Helper failed: ${name}`));
     };
 
+    const helperArgs = normalizeHelperArgs(name, args);
     window.addEventListener('message', onMessage);
-    window.parent.postMessage({ type: 'taber.sandbox.helper', runId, helperId, name, args }, '*');
+    try {
+      window.parent.postMessage({ type: 'taber.sandbox.helper', runId, helperId, name, args: helperArgs }, '*');
+    } catch (error) {
+      window.removeEventListener('message', onMessage);
+      reject(new Error(cloneBoundaryError(`browserRepl helper ${name} arguments`, error)));
+    }
   });
+}
+
+function normalizeHelperArgs(name: string, args: unknown[]) {
+  if (name !== 'browserjs') return args;
+  return [normalizeBrowserJsCode(args[0]), args[1]];
+}
+
+function postResult(runId: string, value: unknown) {
+  try {
+    window.parent.postMessage({ type: 'taber.sandbox.result', runId, value }, '*');
+  } catch (error) {
+    postError(runId, cloneBoundaryError('browserRepl return value', error));
+  }
+}
+
+function postError(runId: string, error: string) {
+  window.parent.postMessage({ type: 'taber.sandbox.error', runId, error }, '*');
 }
 
 async function runNestedSandbox(code: string, args?: unknown) {
