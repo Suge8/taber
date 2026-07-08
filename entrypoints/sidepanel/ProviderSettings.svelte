@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
@@ -7,8 +8,6 @@
   import CaretDown from 'phosphor-svelte/lib/CaretDown';
   import Check from 'phosphor-svelte/lib/Check';
   import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
-  import Eye from 'phosphor-svelte/lib/Eye';
-  import EyeSlash from 'phosphor-svelte/lib/EyeSlash';
   import IdentificationCard from 'phosphor-svelte/lib/IdentificationCard';
   import Key from 'phosphor-svelte/lib/Key';
   import LinkSimple from 'phosphor-svelte/lib/LinkSimple';
@@ -25,9 +24,22 @@
     type ProviderWithModels,
   } from '$lib/provider-store.ts';
   import { createProviderConnection, deleteProviderConnection, updateProviderConnection } from '$lib/provider-config-flow.ts';
+  import {
+    apiKeyProviderKind,
+    createOpenAIApiModelCatalogSnapshot,
+    currentOpenAIApiModelCatalog,
+    listOpenAIApiModelCatalog,
+    modelInputFromPreset,
+    selectOpenAIApiModels,
+    type OpenAIApiModelCatalogSnapshot,
+  } from '$lib/openai-api-provider.ts';
   import { builtinProviderPresets, findPresetModel, mergeProviderCatalog, readCachedModelCatalog, refreshModelCatalog, type ProviderPreset } from '$lib/model-catalog.ts';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
-  import CodexLoginCard from './CodexLoginCard.svelte';
+  import { showManualContextWindowInput } from '$lib/provider-settings-policy.ts';
+  import ProviderSecretInput from './ProviderSecretInput.svelte';
+  import SettingsActionBar from './SettingsActionBar.svelte';
+  import SettingsBackButton from './SettingsBackButton.svelte';
+  import SubscriptionHub from './SubscriptionHub.svelte';
   import type { Notify, ToastTone } from './toast.ts';
 
   type EditModelDraft = { id: number | null; name: string; contextWindowTokens: string };
@@ -45,13 +57,12 @@
 
   let providers = $state<ProviderWithModels[]>([]);
   let providerPresets = $state<ProviderPreset[]>(builtinProviderPresets);
-  let loadError = $state('');
 
   let draftPreset = $state(builtinProviderPresets[0].id);
   let draftName = $state(builtinProviderPresets[0].name);
   let draftBaseURL = $state(builtinProviderPresets[0].baseURL);
   let draftApiKey = $state('');
-  let draftModels = $state<string[]>(builtinProviderPresets[0].models.map((model) => model.name));
+  let draftModels = $state<string[]>([]);
   let draftModelPicker = $state('');
   let draftCustomModel = $state('');
   let draftContextWindowTokens = $state(String(builtinProviderPresets[0].models[0]?.contextWindowTokens ?? 128000));
@@ -59,10 +70,12 @@
   let showApiKey = $state(false);
   let advancedOpen = $state(false);
   let saving = $state(false);
-  let saveError = $state('');
   let addingProvider = $state(false);
+  let subscriptionsOpen = $state(false);
 
   let refreshingCatalog = $state(false);
+  let loadingDraftModels = $state(false);
+  let draftAccountModels = $state<OpenAIApiModelCatalogSnapshot | null>(null);
 
   let editingProviderId = $state<number | null>(null);
   let editName = $state('');
@@ -73,18 +86,34 @@
   let editModels = $state<EditModelDraft[]>([]);
   let editModelName = $state('');
   let editModelContextWindowTokens = $state('128000');
+  let loadingEditModels = $state(false);
+  let editAccountModels = $state<OpenAIApiModelCatalogSnapshot | null>(null);
   let testingProviderId = $state<number | null>(null);
   let confirmProviderId = $state<number | null>(null);
+  let createActionBarElement = $state<HTMLDivElement | null>(null);
 
   const selectedPreset = $derived(providerPresets.find((provider) => provider.id === draftPreset) ?? providerPresets[0]);
-  const availableDraftModels = $derived(selectedPreset.models.filter((model) => !draftModels.includes(model.name)));
-  const apiProviders = $derived(providers.filter((provider) => provider.kind === 'openaiCompatible'));
+  const draftKind = $derived(apiKeyProviderKind(draftBaseURL));
+  const currentDraftAccountModels = $derived(currentOpenAIApiModelCatalog(draftAccountModels, { baseURL: draftBaseURL, apiKey: draftApiKey }));
+  const canLoadDraftAccountModels = $derived(Boolean(draftApiKey.trim() && draftBaseURL.trim()));
+  const showDraftModelSection = $derived(draftKind === 'openaiApiKey' ? canLoadDraftAccountModels || Boolean(currentDraftAccountModels) : Boolean(draftBaseURL.trim()));
+  const showDraftModelControls = $derived(Boolean(draftBaseURL.trim()) && (draftKind !== 'openaiApiKey' || Boolean(currentDraftAccountModels)));
+  const draftModelSource = $derived(draftKind === 'openaiApiKey' ? currentDraftAccountModels : selectedPreset);
+  const availableDraftModels = $derived((draftModelSource?.models ?? []).filter((model) => !draftModels.includes(model.name)));
+  const editKind = $derived(apiKeyProviderKind(editBaseURL));
+  const showDraftContextWindowInput = $derived(showManualContextWindowInput(draftKind));
+  const showEditContextWindowInput = $derived(showManualContextWindowInput(editKind));
+  const currentEditAccountModels = $derived(currentOpenAIApiModelCatalog(editAccountModels, { baseURL: editBaseURL, apiKey: editApiKey }));
+  const canLoadEditAccountModels = $derived(Boolean(editApiKey.trim() && editBaseURL.trim()));
+  const availableEditModels = $derived((editKind === 'openaiApiKey' ? currentEditAccountModels?.models ?? [] : []).filter((model) => !editModels.some((draft) => draft.name === model.name)));
+  const apiProviders = $derived(providers.filter((provider) => provider.kind !== 'openaiCodex' && provider.kind !== 'xaiSub'));
   const codexProvider = $derived(providers.find((provider) => provider.kind === 'openaiCodex'));
-  const codexConnected = $derived(Boolean(codexProvider?.hasCredential));
-  const savedConnectionCount = $derived(apiProviders.length + (codexConnected ? 1 : 0));
-  const showProviderHome = $derived(!addingProvider && editingProviderId === null);
+  const xaiProvider = $derived(providers.find((provider) => provider.kind === 'xaiSub'));
+  const savedConnectionCount = $derived(apiProviders.length);
+  const showProviderHome = $derived(!addingProvider && editingProviderId === null && !subscriptionsOpen);
   const showProviderList = $derived(showProviderHome && savedConnectionCount > 0);
   const showCreateForm = $derived(addingProvider);
+  const showSubscriptions = $derived(subscriptionsOpen && !addingProvider && editingProviderId === null);
   const editingProvider = $derived(apiProviders.find((provider) => provider.id === editingProviderId));
   const createProviderId = $derived(variant === 'onboarding' ? 'onboarding-provider' : 'provider-preset');
   const createModelId = $derived(variant === 'onboarding' ? 'onboarding-model' : 'provider-model');
@@ -103,30 +132,32 @@
       const [list, catalog] = await Promise.all([listProvidersWithModels(), readCachedModelCatalog()]);
       providerPresets = mergeProviderCatalog(catalog);
       providers = list;
-      loadError = '';
       await onChanged?.();
     } catch (error) {
-      loadError = describe(error);
+      pushError(error);
     }
   }
 
   async function handleCreate() {
-    saveError = '';
     const modelNames = uniqueModels(draftModels);
-    if (!draftName.trim() || !draftBaseURL.trim() || modelNames.length === 0 || (variant === 'onboarding' && !draftApiKey.trim())) {
-      saveError = variant === 'onboarding' ? t.onboardingRequired : t.required;
+    const kind = apiKeyProviderKind(draftBaseURL);
+    if (!draftName.trim() || !draftBaseURL.trim() || modelNames.length === 0 || ((variant === 'onboarding' || kind === 'openaiApiKey') && !draftApiKey.trim())) {
+      pushNotice('error', variant === 'onboarding' ? t.onboardingRequired : t.required);
       return;
     }
     saving = true;
     try {
       await createProviderConnection({
+        kind,
         name: draftName.trim(),
         baseURL: draftBaseURL.trim(),
         apiKey: draftApiKey,
-        models: modelNames.map((name) => ({
-          name,
-          contextWindowTokens: findPresetModel(providerPresets, draftPreset, name)?.contextWindowTokens ?? Number(draftContextWindowTokens),
-        })),
+        models: kind === 'openaiApiKey'
+          ? selectOpenAIApiModels(requireDraftAccountModels(), modelNames)
+          : modelNames.map((name) => {
+              const model = modelInputFromPreset(name, selectedPreset);
+              return findPresetModel(providerPresets, draftPreset, name) ? model : { ...model, contextWindowTokens: Number(draftContextWindowTokens) };
+            }),
       });
       resetCreateForm();
       addingProvider = false;
@@ -152,7 +183,61 @@
     }
   }
 
+  async function loadDraftAccountModels() {
+    if (!draftApiKey.trim() || !draftBaseURL.trim()) {
+      pushNotice('error', t.openAIModelsKeyRequired);
+      return;
+    }
+    const request = { baseURL: draftBaseURL.trim(), apiKey: draftApiKey.trim() };
+    loadingDraftModels = true;
+    try {
+      const catalog = await listOpenAIApiModelCatalog(request);
+      const snapshot = createOpenAIApiModelCatalogSnapshot(request, catalog);
+      draftAccountModels = snapshot;
+      if (!currentOpenAIApiModelCatalog(snapshot, { baseURL: draftBaseURL, apiKey: draftApiKey })) return;
+      draftModels = draftModels.filter((name) => catalog.models.some((model) => model.name === name));
+      if (draftModels.length === 0 && catalog.models[0]) draftModels = [catalog.models[0].name];
+      pushNotice('success', t.okModels(catalog.models.length));
+    } catch (error) {
+      pushError(error);
+    } finally {
+      loadingDraftModels = false;
+    }
+  }
+
+  async function loadEditAccountModels() {
+    if (!editApiKey.trim() || !editBaseURL.trim()) {
+      pushNotice('error', t.openAIModelsKeyRequired);
+      return;
+    }
+    const request = { baseURL: editBaseURL.trim(), apiKey: editApiKey.trim() };
+    loadingEditModels = true;
+    try {
+      const catalog = await listOpenAIApiModelCatalog(request);
+      const snapshot = createOpenAIApiModelCatalogSnapshot(request, catalog);
+      editAccountModels = snapshot;
+      if (!currentOpenAIApiModelCatalog(snapshot, { baseURL: editBaseURL, apiKey: editApiKey })) return;
+      editModels = editModels.filter((draft) => catalog.models.some((model) => model.name === draft.name));
+      pushNotice('success', t.okModels(catalog.models.length));
+    } catch (error) {
+      pushError(error);
+    } finally {
+      loadingEditModels = false;
+    }
+  }
+
+  function requireDraftAccountModels() {
+    if (!currentDraftAccountModels) throw new Error(t.openAIModelsLoadRequired);
+    return currentDraftAccountModels;
+  }
+
+  function requireEditAccountModels() {
+    if (!currentEditAccountModels) throw new Error(t.openAIModelsLoadRequired);
+    return currentEditAccountModels;
+  }
+
   function startCreateProvider() {
+    subscriptionsOpen = false;
     resetCreateForm();
     addingProvider = true;
   }
@@ -162,6 +247,49 @@
     addingProvider = false;
   }
 
+  async function toggleAdvanced() {
+    const previousBox = createActionBarElement?.getBoundingClientRect();
+    advancedOpen = !advancedOpen;
+    await tick();
+    animateFrom(previousBox, createActionBarElement);
+  }
+
+  function animateFrom(previousBox: DOMRect | undefined, element: HTMLElement | null) {
+    if (!previousBox || !element || shouldReduceMotion()) return;
+    const nextBox = element.getBoundingClientRect();
+    const deltaX = previousBox.left - nextBox.left;
+    const deltaY = previousBox.top - nextBox.top;
+    if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
+    const timing = animationTiming();
+    element.animate(
+      [
+        { transform: `translate(${deltaX}px, ${deltaY}px)` },
+        { transform: 'translate(0, 0)' },
+      ],
+      timing,
+    );
+  }
+
+  function animationTiming() {
+    if (typeof window === 'undefined') return { duration: 180, easing: 'ease-out' };
+    const styles = getComputedStyle(document.documentElement);
+    return {
+      duration: durationMs(styles.getPropertyValue('--d-base'), 180),
+      easing: styles.getPropertyValue('--ease-out').trim() || 'ease-out',
+    };
+  }
+
+  function durationMs(value: string, fallback: number) {
+    const trimmed = value.trim();
+    if (trimmed.endsWith('ms')) return Number(trimmed.slice(0, -2)) || fallback;
+    if (trimmed.endsWith('s')) return (Number(trimmed.slice(0, -1)) || fallback / 1000) * 1000;
+    return fallback;
+  }
+
+  function shouldReduceMotion() {
+    return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
   function applyPreset(id: string) {
     draftPreset = id;
     advancedOpen = id === 'custom';
@@ -169,7 +297,8 @@
     if (!preset) return;
     draftName = id === 'custom' ? '' : preset.name;
     draftBaseURL = preset.baseURL;
-    draftModels = presetDraftModels(preset);
+    draftAccountModels = null;
+    draftModels = apiKeyProviderKind(preset.baseURL) === 'openaiApiKey' ? [] : presetDraftModels(preset);
     draftModelPicker = '';
     draftContextWindowTokens = String(presetDraftContextWindow(preset));
     draftCustomModel = '';
@@ -180,8 +309,8 @@
     const preset = providerPresets[0] ?? builtinProviderPresets[0];
     applyPreset(preset.id);
     draftApiKey = '';
+    draftAccountModels = null;
     showApiKey = false;
-    saveError = '';
   }
 
   function presetDraftModels(preset: ProviderPreset) {
@@ -197,8 +326,12 @@
   function addDraftModel(name: string) {
     const trimmed = name.trim();
     if (!trimmed || draftModels.includes(trimmed)) return;
+    if (draftKind === 'openaiApiKey' && !currentDraftAccountModels?.models.some((model) => model.name === trimmed)) {
+      pushNotice('error', t.openAIModelUnavailable);
+      return;
+    }
     draftModels = [...draftModels, trimmed];
-    const preset = findPresetModel(providerPresets, draftPreset, trimmed);
+    const preset = findPresetModel(draftKind === 'openaiApiKey' && currentDraftAccountModels ? [currentDraftAccountModels] : providerPresets, draftPreset, trimmed);
     if (preset) draftContextWindowTokens = String(preset.contextWindowTokens);
   }
 
@@ -209,6 +342,13 @@
 
   function removeDraftModel(name: string) {
     draftModels = draftModels.filter((model) => model !== name);
+  }
+
+  function selectEditModel(name: string) {
+    const model = currentEditAccountModels?.models.find((item) => item.name === name);
+    if (!model || editModels.some((draft) => draft.name === model.name)) return;
+    editModels = [...editModels, { id: null, name: model.name, contextWindowTokens: String(model.contextWindowTokens) }];
+    editModelName = '';
   }
 
   function addCustomDraftModel() {
@@ -225,8 +365,8 @@
   }
 
   async function startEdit(provider: ProviderWithModels) {
+    subscriptionsOpen = false;
     addingProvider = false;
-    saveError = '';
     editingProviderId = provider.id;
     editName = provider.name;
     editBaseURL = provider.baseURL;
@@ -235,6 +375,7 @@
     editModelName = '';
     editModelContextWindowTokens = '128000';
     editShowKey = false;
+    editAccountModels = null;
     try {
       editApiKey = await getProviderApiKey(provider.id);
     } catch (error) {
@@ -247,23 +388,28 @@
   }
 
   async function saveEdit(provider: ProviderWithModels) {
-    saveError = '';
     const modelNames = uniqueModels(editModels.map((model) => model.name));
-    if (!editName.trim() || !editBaseURL.trim() || modelNames.length === 0) {
-      saveError = t.required;
+    const kind = apiKeyProviderKind(editBaseURL);
+    if (!editName.trim() || !editBaseURL.trim() || modelNames.length === 0 || (kind === 'openaiApiKey' && !editApiKey.trim())) {
+      pushNotice('error', t.required);
       return;
     }
     saving = true;
     try {
+      const models = kind === 'openaiApiKey'
+        ? selectOpenAIApiModels(requireEditAccountModels(), modelNames)
+          .map((model) => ({ ...model, id: editModels.find((draft) => draft.name === model.name)?.id ?? null }))
+        : editModels.map((model) => ({
+            id: model.id,
+            name: model.name,
+            contextWindowTokens: Number(model.contextWindowTokens),
+          }));
       await updateProviderConnection(provider.id, {
+        kind,
         name: editName,
         baseURL: editBaseURL,
         apiKey: editApiKey,
-        models: editModels.map((model) => ({
-          id: model.id,
-          name: model.name,
-          contextWindowTokens: Number(model.contextWindowTokens),
-        })),
+        models,
       });
       resetEditForm();
       await refresh();
@@ -280,13 +426,21 @@
     editModels = [];
     editModelName = '';
     editModelContextWindowTokens = '128000';
-    saveError = '';
   }
 
   function addEditModel() {
     const name = editModelName.trim();
     if (!name || editModels.some((model) => model.name === name)) return;
-    editModels = [...editModels, { id: null, name, contextWindowTokens: editModelContextWindowTokens || '128000' }];
+    if (editKind === 'openaiApiKey') {
+      const model = currentEditAccountModels?.models.find((item) => item.name === name);
+      if (!model) {
+        pushNotice('error', t.openAIModelUnavailable);
+        return;
+      }
+      editModels = [...editModels, { id: null, name, contextWindowTokens: String(model.contextWindowTokens) }];
+    } else {
+      editModels = [...editModels, { id: null, name, contextWindowTokens: editModelContextWindowTokens || '128000' }];
+    }
     editModelName = '';
     editModelContextWindowTokens = '128000';
   }
@@ -331,7 +485,7 @@
   }
 
   function pushNotice(tone: ToastTone, text: string) {
-    notify?.({ tone, text });
+    notify?.({ tone, icon: 'model', text });
   }
 
   function pushError(error: unknown) {
@@ -348,17 +502,28 @@
 </script>
 
 <div class="flex flex-col gap-5">
+  {#if showSubscriptions}
+    <SubscriptionHub
+      {locale}
+      {codexProvider}
+      {xaiProvider}
+      open={true}
+      onOpenChange={(next) => {
+        subscriptionsOpen = next;
+      }}
+      onChanged={refresh}
+      {notify}
+    />
+  {/if}
+
   {#if showProviderHome}
     {#if showProviderList}
       <section class="space-y-3">
         <div class="flex items-center justify-between gap-3 px-1">
           <h3 class="text-muted-foreground text-[12px] font-medium">{t.savedConnections(savedConnectionCount)}</h3>
         </div>
-        {#if codexConnected}
-          <CodexLoginCard {locale} provider={codexProvider} onChanged={refresh} {notify} />
-        {/if}
         {#each apiProviders as provider, index (provider.id)}
-          <article class="bg-surface ring-line/70 fx-enter space-y-3 rounded-2xl p-4 shadow-[0_6px_20px_oklch(0_0_0_/_0.025)] ring-1" style="--fx-index: {Math.min(index + (codexConnected ? 1 : 0), 4)}">
+          <article class="bg-surface ring-line/70 fx-enter space-y-3 rounded-2xl p-4 shadow-[0_6px_20px_oklch(0_0_0_/_0.025)] ring-1" style="--fx-index: {Math.min(index, 4)}">
             <header class="fx-enter flex items-center justify-between gap-3">
               <div class="min-w-0">
                 <h4 class="truncate text-sm font-semibold tracking-tight">{provider.name}</h4>
@@ -394,9 +559,17 @@
     {/if}
 
     <section class="space-y-3 {spotlight ? 'fx-spotlight fx-spotlight-frame' : ''}">
-      {#if !codexConnected}
-        <CodexLoginCard {locale} provider={codexProvider} onChanged={refresh} {notify} />
-      {/if}
+      <SubscriptionHub
+        {locale}
+        {codexProvider}
+        {xaiProvider}
+        open={false}
+        onOpenChange={(next) => {
+          subscriptionsOpen = next;
+        }}
+        onChanged={refresh}
+        {notify}
+      />
       <button
         type="button"
         data-smoke="add-api-provider"
@@ -419,21 +592,31 @@
   {/if}
 
   {#if editingProvider}
-    <section class="fx-enter space-y-5">
+    <section class="provider-settings-page">
+      <SettingsBackButton label={t.back} onclick={cancelEdit} />
+      <section class="provider-settings-form fx-enter">
       <div class="space-y-3">
         <div class="space-y-1.5"><Label class="text-xs"><IdentificationCard class="text-muted-foreground size-3.5" />{t.name}</Label><Input bind:value={editName} class="rounded-xl" /></div>
         <div class="space-y-1.5"><Label class="text-xs"><LinkSimple class="text-muted-foreground size-3.5" />{t.baseUrl}</Label><Input bind:value={editBaseURL} class="rounded-xl" /></div>
-        <div class="space-y-1.5">
-          <Label class="text-xs"><Key class="text-muted-foreground size-3.5" />{t.apiKey}</Label>
-          <div class="relative">
-            <Input type={editShowKey ? 'text' : 'password'} bind:value={editApiKey} class="rounded-xl pr-10 font-mono" />
-            <button type="button" class="hover:bg-surface-2 text-muted-foreground absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-xl transition-colors" onclick={() => (editShowKey = !editShowKey)} aria-label={t.toggleKey}>{#if editShowKey}<EyeSlash class="size-4" />{:else}<Eye class="size-4" />{/if}</button>
-          </div>
-        </div>
+        <ProviderSecretInput
+          bind:value={editApiKey}
+          bind:visible={editShowKey}
+          placeholder={t.keyLabel}
+          showLabel={t.showKey}
+          hideLabel={t.hideKey}
+          ariaLabel={t.apiKey}
+        />
       </div>
 
       <div class="space-y-2">
-        <h5 class="text-muted-foreground flex items-center gap-1.5 text-[12px] font-medium"><Stack class="size-3.5" />{t.models}</h5>
+        <div class="flex items-center justify-between gap-2">
+          <h5 class="text-muted-foreground flex items-center gap-1.5 text-[12px] font-medium"><Stack class="size-3.5" />{t.models}</h5>
+          {#if editKind === 'openaiApiKey' && canLoadEditAccountModels}
+            <Button size="icon-sm" variant="ghost" onclick={() => void loadEditAccountModels()} disabled={loadingEditModels} class="text-muted-foreground hover:text-foreground size-7 rounded-lg" aria-label={t.openAIModelsLoad} title={t.openAIModelsLoad}>
+              <ArrowClockwise class="size-3.5 {loadingEditModels ? 'animate-spin' : ''}" />
+            </Button>
+          {/if}
+        </div>
         {#if editModels.length === 0}
           <p class="text-muted-foreground text-xs">{t.noModels}</p>
         {:else}
@@ -441,124 +624,146 @@
             {#each editModels as model, index (model.id ?? model.name)}
               <li class="bg-surface-2/60 flex items-center justify-between gap-2 rounded-xl px-2.5 py-1.5">
                 <span class="min-w-0 flex-1 truncate text-xs font-medium">{model.name}</span>
-                <Input aria-label={t.contextWindow} type="number" min="1" value={model.contextWindowTokens} oninput={(event) => updateEditModelContext(index, (event.currentTarget as HTMLInputElement).value)} class="h-7 w-24 rounded-lg text-xs" />
+                {#if showEditContextWindowInput}
+                  <Input aria-label={t.contextWindow} type="number" min="1" value={model.contextWindowTokens} oninput={(event) => updateEditModelContext(index, (event.currentTarget as HTMLInputElement).value)} class="h-7 w-24 rounded-lg text-xs" />
+                {/if}
                 <Button size="icon-sm" variant="ghost" onclick={() => removeEditModel(index)} class="text-muted-foreground hover:text-danger size-7 rounded-lg" aria-label={t.removeModel}><Trash class="size-3" /></Button>
               </li>
             {/each}
           </ul>
         {/if}
-        <div class="grid grid-cols-[1fr_7rem_auto] gap-2 pt-1">
-          <Input
-            placeholder={t.modelPlaceholder}
-            bind:value={editModelName}
-            onkeydown={(event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addEditModel(); } }}
-            class="h-8 rounded-xl text-xs"
-          />
-          <Input aria-label={t.contextWindow} type="number" min="1" bind:value={editModelContextWindowTokens} class="h-8 rounded-xl text-xs" />
-          <Button size="icon-sm" onclick={addEditModel} disabled={!editModelName.trim()} class="size-8 rounded-xl" aria-label={t.add}><Plus class="size-3.5" /></Button>
-        </div>
+        {#if editKind === 'openaiApiKey'}
+          {#if availableEditModels.length > 0}
+            <Select.Root type="single" value="" disabled={saving} onValueChange={selectEditModel}>
+              <Select.Trigger class="h-8 min-w-40 rounded-xl bg-background px-3 text-xs"><span data-slot="select-value" class="truncate text-muted-foreground">{t.addModel}</span></Select.Trigger>
+              <Select.Content sideOffset={8} class="rounded-2xl p-1.5 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
+                {#each availableEditModels as model (model.name)}<Select.Item value={model.name} label={model.name} class="rounded-xl text-xs">{model.name}</Select.Item>{/each}
+              </Select.Content>
+            </Select.Root>
+          {/if}
+        {:else}
+          <div class="grid grid-cols-[1fr_7rem_auto] gap-2 pt-1">
+            <Input
+              placeholder={t.modelPlaceholder}
+              bind:value={editModelName}
+              onkeydown={(event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addEditModel(); } }}
+              class="h-8 rounded-xl text-xs"
+            />
+            <Input aria-label={t.contextWindow} type="number" min="1" bind:value={editModelContextWindowTokens} class="h-8 rounded-xl text-xs" />
+            <Button size="icon-sm" onclick={addEditModel} disabled={!editModelName.trim()} class="size-8 rounded-xl" aria-label={t.add}><Plus class="size-3.5" /></Button>
+          </div>
+        {/if}
       </div>
+      <SettingsActionBar>
+        <Button type="button" onclick={() => saveEdit(editingProvider)} disabled={saving} class="h-9 min-w-28 rounded-xl px-5 shadow-none">
+          {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" weight="duotone" />{/if}{t.save}
+        </Button>
+      </SettingsActionBar>
+      </section>
     </section>
-
-    {#if saveError}<p class="text-danger fx-enter text-xs" role="alert">{saveError}</p>{/if}
-    <div class="sticky bottom-0 z-10 -mx-5 -mb-5 mt-1 flex flex-wrap items-center justify-end gap-2 bg-popover/85 px-5 py-3 backdrop-blur-sm">
-      <Button type="button" variant="ghost" onclick={cancelEdit} class="h-9 rounded-xl px-4">{t.cancel}</Button>
-      <Button type="button" onclick={() => saveEdit(editingProvider)} disabled={saving} class="h-9 min-w-28 rounded-xl px-5 shadow-none">
-        {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" weight="duotone" />{/if}{t.save}
-      </Button>
-    </div>
   {/if}
 
   {#if showCreateForm}
-    <section class="fx-enter space-y-5">
+    <section class="provider-settings-page">
+      <SettingsBackButton label={t.back} onclick={cancelCreateProvider} />
+      <section class="provider-settings-form fx-enter">
       <div class="space-y-3">
-        <div class="space-y-1.5">
-          <Label class="text-xs" for={createProviderId}>{t.preset}</Label>
-          <Select.Root type="single" bind:value={draftPreset} disabled={saving} onValueChange={applyPreset}>
-            <Select.Trigger id={createProviderId} class="h-9 w-full rounded-xl bg-background px-3 text-sm shadow-[0_1px_2px_oklch(0_0_0_/_0.03)]">
+        <Select.Root type="single" bind:value={draftPreset} disabled={saving} onValueChange={applyPreset}>
+          <Select.Trigger id={createProviderId} aria-label={t.preset} class="h-9 w-full rounded-xl bg-background px-3 text-sm shadow-[0_1px_2px_oklch(0_0_0_/_0.03)]">
               <span data-slot="select-value" class="truncate">{selectedPreset.name}</span>
             </Select.Trigger>
             <Select.Content sideOffset={8} class="rounded-2xl p-1.5 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
-              {#each providerPresets as preset (preset.id)}
-                <Select.Item value={preset.id} label={preset.name} class="rounded-xl text-xs">{preset.name}</Select.Item>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-        </div>
+            {#each providerPresets as preset (preset.id)}
+              <Select.Item value={preset.id} label={preset.name} class="rounded-xl text-xs">{preset.name}</Select.Item>
+            {/each}
+          </Select.Content>
+        </Select.Root>
 
-        <div class="space-y-1.5">
-          <Label class="text-xs" for={createApiKeyId}><Key class="text-muted-foreground size-3.5" />{t.apiKey}</Label>
-          <div class="relative">
-            <Input id={createApiKeyId} type={showApiKey ? 'text' : 'password'} placeholder="sk-…" bind:value={draftApiKey} disabled={saving} class="rounded-xl pr-10 font-mono" />
-            <button type="button" class="hover:bg-surface-2 text-muted-foreground absolute inset-y-0 right-0 flex w-9 items-center justify-center rounded-r-xl transition-colors" aria-label={showApiKey ? t.hideKey : t.showKey} onclick={() => (showApiKey = !showApiKey)}>
-              {#if showApiKey}<EyeSlash class="size-4" />{:else}<Eye class="size-4" />{/if}
-            </button>
-          </div>
-        </div>
+        <ProviderSecretInput
+          id={createApiKeyId}
+          bind:value={draftApiKey}
+          bind:visible={showApiKey}
+          disabled={saving}
+          placeholder={t.keyLabel}
+          showLabel={t.showKey}
+          hideLabel={t.hideKey}
+          ariaLabel={t.apiKey}
+        />
       </div>
 
-      <div class="space-y-2">
-        <Label class="text-xs" for={createModelId}><Stack class="text-muted-foreground size-3.5" />{t.modelsToAdd}</Label>
-        {#if availableDraftModels.length > 0}
-          <Select.Root type="single" bind:value={draftModelPicker} disabled={saving} onValueChange={selectDraftModel}>
-            <Select.Trigger id={createModelId} class="h-9 w-full rounded-xl bg-background px-3 text-sm">
-              <span data-slot="select-value" class="truncate text-muted-foreground">{t.addModel}</span>
-            </Select.Trigger>
-            <Select.Content sideOffset={8} class="rounded-2xl p-1.5 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
-              {#each availableDraftModels as model (model.name)}
-                <Select.Item value={model.name} label={model.name} class="rounded-xl text-xs">{model.name}</Select.Item>
-              {/each}
-            </Select.Content>
-          </Select.Root>
-        {/if}
-        <div class="flex flex-wrap gap-1.5">
-          {#each draftModels as model (model)}
-            <span class="group bg-surface-2/70 text-foreground ring-line/60 inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[12px] ring-1">
-              {model}
-              <button type="button" class="text-muted-foreground hover:text-danger opacity-70 transition-opacity group-hover:opacity-100" aria-label={t.removeModel} onclick={() => removeDraftModel(model)}>
-                <X class="size-3" />
-              </button>
-            </span>
-          {/each}
-          {#if draftModels.length === 0}<span class="text-muted-foreground px-0.5 py-1 text-xs">{t.noSelectedModels}</span>{/if}
-        </div>
-        {#if customModelOpen}
-          <div class="grid grid-cols-[1fr_auto_auto] gap-2">
-            <Input
-              aria-label={t.customModel}
-              placeholder={t.customModelPlaceholder}
-              bind:value={draftCustomModel}
-              disabled={saving}
-              class="h-9 rounded-xl text-sm"
-              onkeydown={(event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addCustomDraftModel(); } }}
-            />
-            <Button size="icon-sm" onclick={addCustomDraftModel} disabled={saving || !draftCustomModel.trim()} class="size-9 rounded-xl" aria-label={t.add}><Check class="size-3.5" /></Button>
-            <Button size="icon-sm" variant="ghost" onclick={cancelCustomDraftModel} class="size-9 rounded-xl" aria-label={t.cancel}><X class="size-3.5" /></Button>
+      {#if showDraftModelSection}
+        <div class="space-y-2">
+          <div class="flex items-center justify-between gap-2">
+            <Label class="text-xs" for={createModelId}><Stack class="text-muted-foreground size-3.5" />{t.modelsToAdd}</Label>
+            {#if draftKind === 'openaiApiKey' && canLoadDraftAccountModels}
+              <Button size="icon-sm" variant="ghost" onclick={() => void loadDraftAccountModels()} disabled={loadingDraftModels} class="text-muted-foreground hover:text-foreground size-7 rounded-lg" aria-label={t.openAIModelsLoad} title={t.openAIModelsLoad}>
+                <ArrowClockwise class="size-3.5 {loadingDraftModels ? 'animate-spin' : ''}" />
+              </Button>
+            {/if}
           </div>
-        {:else}
-          <Button size="sm" variant="ghost" onclick={() => (customModelOpen = true)} class="h-7 rounded-lg px-2 text-[11.5px]"><Plus class="mr-1 size-3.5" />{t.customModel}</Button>
-        {/if}
-        {#if variant === 'panel'}
-          <Button size="sm" variant="ghost" onclick={handleRefreshCatalog} disabled={refreshingCatalog} class="h-7 rounded-lg px-2 text-[11.5px]">
-            {#if refreshingCatalog}<ArrowClockwise class="mr-1 size-3.5 animate-spin" />{:else}<ArrowClockwise class="mr-1 size-3.5" />{/if}{t.refreshCatalog}
-          </Button>
-        {/if}
-      </div>
+          {#if showDraftModelControls}
+          {#if availableDraftModels.length > 0}
+            <Select.Root type="single" bind:value={draftModelPicker} disabled={saving} onValueChange={selectDraftModel}>
+              <Select.Trigger id={createModelId} class="h-9 w-full rounded-xl bg-background px-3 text-sm">
+                <span data-slot="select-value" class="truncate text-muted-foreground">{t.addModel}</span>
+              </Select.Trigger>
+              <Select.Content sideOffset={8} class="rounded-2xl p-1.5 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
+                {#each availableDraftModels as model (model.name)}
+                  <Select.Item value={model.name} label={model.name} class="rounded-xl text-xs">{model.name}</Select.Item>
+                {/each}
+              </Select.Content>
+            </Select.Root>
+          {/if}
+          <div class="flex flex-wrap gap-1.5">
+            {#each draftModels as model (model)}
+              <span class="group bg-surface-2/70 text-foreground ring-line/60 inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[12px] ring-1">
+                {model}
+                <button type="button" class="text-muted-foreground hover:text-danger opacity-70 transition-opacity group-hover:opacity-100" aria-label={t.removeModel} onclick={() => removeDraftModel(model)}>
+                  <X class="size-3" />
+                </button>
+              </span>
+            {/each}
+            {#if draftModels.length === 0}<span class="text-muted-foreground px-0.5 py-1 text-xs">{t.noSelectedModels}</span>{/if}
+          </div>
+          {#if draftKind !== 'openaiApiKey' && customModelOpen}
+            <div class="grid grid-cols-[1fr_auto_auto] gap-2">
+              <Input
+                aria-label={t.customModel}
+                placeholder={t.customModelPlaceholder}
+                bind:value={draftCustomModel}
+                disabled={saving}
+                class="h-9 rounded-xl text-sm"
+                onkeydown={(event) => { if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); addCustomDraftModel(); } }}
+              />
+              <Button size="icon-sm" onclick={addCustomDraftModel} disabled={saving || !draftCustomModel.trim()} class="size-9 rounded-xl" aria-label={t.add}><Check class="size-3.5" /></Button>
+              <Button size="icon-sm" variant="ghost" onclick={cancelCustomDraftModel} class="size-9 rounded-xl" aria-label={t.cancel}><X class="size-3.5" /></Button>
+            </div>
+          {:else if draftKind !== 'openaiApiKey'}
+            <Button size="sm" variant="ghost" onclick={() => (customModelOpen = true)} class="h-7 rounded-lg px-2 text-[11.5px]"><Plus class="mr-1 size-3.5" />{t.customModel}</Button>
+          {/if}
+          {#if variant === 'panel' && draftKind !== 'openaiApiKey'}
+            <Button size="sm" variant="ghost" onclick={handleRefreshCatalog} disabled={refreshingCatalog} class="h-7 rounded-lg px-2 text-[11.5px]">
+              {#if refreshingCatalog}<ArrowClockwise class="mr-1 size-3.5 animate-spin" />{:else}<ArrowClockwise class="mr-1 size-3.5" />{/if}{t.refreshCatalog}
+            </Button>
+          {/if}
+          {/if}
+        </div>
+      {/if}
 
-      <div class="space-y-2">
+      <div class="provider-settings-advanced" data-open={advancedOpen ? '' : undefined}>
         <button
           type="button"
-          class="text-muted-foreground hover:text-foreground flex items-center gap-1.5 rounded-lg py-1 text-[12px] transition-colors"
+          class="provider-settings-advanced__toggle text-muted-foreground hover:text-foreground flex items-center gap-1.5 rounded-lg py-1 text-[12px] transition-colors"
           aria-expanded={advancedOpen}
           aria-controls={advancedFieldsId}
-          onclick={() => (advancedOpen = !advancedOpen)}
+          onclick={() => void toggleAdvanced()}
         >
           <CaretDown class="size-3.5 transition-transform {advancedOpen ? 'rotate-180' : ''}" />
           {t.advanced}
         </button>
         <div
           id={advancedFieldsId}
-          class="grid transition-[grid-template-rows,opacity] duration-[var(--d-base)] ease-[var(--ease-out)] {advancedOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}"
+          class="provider-settings-advanced__fields grid transition-[grid-template-rows,opacity] duration-[var(--d-base)] ease-[var(--ease-out)] {advancedOpen ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}"
           inert={!advancedOpen}
           aria-hidden={!advancedOpen}
         >
@@ -566,21 +771,66 @@
             <div class="mt-3 grid grid-cols-1 gap-3">
               <div class="space-y-1.5"><Label class="text-xs" for={advancedNameId}><IdentificationCard class="text-muted-foreground size-3.5" />{t.name}</Label><Input id={advancedNameId} placeholder="OpenAI" bind:value={draftName} disabled={saving} class="rounded-xl" /></div>
               <div class="space-y-1.5"><Label class="text-xs" for={advancedBaseUrlId}><LinkSimple class="text-muted-foreground size-3.5" />{t.baseUrl}</Label><Input id={advancedBaseUrlId} placeholder="https://api.openai.com/v1" bind:value={draftBaseURL} disabled={saving} class="rounded-xl" /></div>
-              <div class="space-y-1.5"><Label class="text-xs" for={advancedContextId}>{t.contextWindow}</Label><Input id={advancedContextId} type="number" min="1" bind:value={draftContextWindowTokens} disabled={saving} class="rounded-xl" /></div>
+              {#if showDraftContextWindowInput}
+                <div class="space-y-1.5"><Label class="text-xs" for={advancedContextId}>{t.contextWindow}</Label><Input id={advancedContextId} type="number" min="1" bind:value={draftContextWindowTokens} disabled={saving} class="rounded-xl" /></div>
+              {/if}
             </div>
           </div>
         </div>
+        <SettingsActionBar bind:ref={createActionBarElement}>
+          <Button type="button" data-smoke="save-provider" onclick={handleCreate} disabled={saving} class="h-9 min-w-28 rounded-xl px-5 shadow-none">
+            {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" weight="duotone" />{/if}{t.connect}
+          </Button>
+        </SettingsActionBar>
       </div>
+      </section>
     </section>
-
-    {#if saveError}<p class="text-danger fx-enter text-xs" role="alert">{saveError}</p>{/if}
-    <div class="sticky bottom-0 z-10 -mx-5 -mb-5 mt-1 flex flex-wrap items-center justify-end gap-2 bg-popover/85 px-5 py-3 backdrop-blur-sm">
-      <Button type="button" variant="ghost" onclick={cancelCreateProvider} class="h-9 rounded-xl px-4">{t.cancel}</Button>
-      <Button type="button" data-smoke="save-provider" onclick={handleCreate} disabled={saving} class="h-9 min-w-28 rounded-xl px-5 shadow-none">
-        {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" weight="duotone" />{/if}{t.connect}
-      </Button>
-    </div>
   {/if}
 
-  {#if loadError}<p class="text-danger fx-enter text-xs" role="alert">{loadError}</p>{/if}
 </div>
+
+<style>
+  .provider-settings-page {
+    --provider-settings-back-gap: 0.75rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--provider-settings-back-gap);
+  }
+
+  .provider-settings-form {
+    --provider-settings-section-gap: 1rem;
+    --provider-settings-action-gap: 0.875rem;
+    display: flex;
+    flex-direction: column;
+    gap: var(--provider-settings-section-gap);
+  }
+
+  .provider-settings-advanced {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: var(--provider-settings-section-gap);
+  }
+
+  .provider-settings-advanced__toggle {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+  }
+
+  .provider-settings-advanced__fields {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .provider-settings-advanced :global(.settings-action-bar) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .provider-settings-advanced[data-open] :global(.settings-action-bar) {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    margin-top: var(--provider-settings-action-gap);
+  }
+</style>

@@ -10,9 +10,8 @@
   import Sun from 'phosphor-svelte/lib/Sun';
   import BrowserAccessPanel from './BrowserAccessPanel.svelte';
   import ProviderSettings from './ProviderSettings.svelte';
-  import ToastStack from './ToastStack.svelte';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
-  import type { Notify, ToastNotice } from './toast.ts';
+  import type { Notify } from './toast.ts';
 
   type Theme = 'light' | 'dark' | 'system';
   type SettingsTab = 'preferences' | 'providers';
@@ -31,7 +30,6 @@
     spotlight?: boolean;
     providerSpotlight?: boolean;
     notify?: Notify;
-    notices?: ToastNotice[];
   }
 
   let {
@@ -48,7 +46,6 @@
     spotlight = false,
     providerSpotlight = false,
     notify,
-    notices = [],
   }: Props = $props();
 
   let t = $derived(messages[locale]);
@@ -106,6 +103,14 @@
     return `width: calc((100% - ${2 * paddingRem + gapRem * (count - 1)}rem) / ${count}); transform: translateX(calc(${index * 100}% + ${index * gapRem}rem));`;
   }
 
+  function notifyBrowser(notice: Parameters<Notify>[0]) {
+    notify?.({ ...notice, icon: notice.icon ?? 'browser' });
+  }
+
+  function notifyProvider(notice: Parameters<Notify>[0]) {
+    notify?.({ ...notice, icon: notice.icon ?? 'model' });
+  }
+
   function readShortcutLabel() {
     if (typeof navigator === 'undefined') return 'Alt E';
     return navigator.platform.toLowerCase().includes('mac') ? '⌘ E' : 'Alt E';
@@ -114,7 +119,6 @@
 
 <Dialog.Root bind:open>
   <Dialog.Content data-spotlight={activeSpotlight ? '' : null} class="flex max-h-[min(86vh,640px)] w-[min(92vw,28rem)] flex-col gap-0 overflow-hidden rounded-2xl p-0 ring-2 sm:max-w-[28rem]">
-    <ToastStack items={notices} placement="dialog" />
     <header class="{dimClass} flex items-center justify-between px-5 pb-3 pt-4">
       <Dialog.Title class="text-[15px] font-semibold tracking-tight text-foreground">{t.app.settings}</Dialog.Title>
       <Dialog.Description class="sr-only">{t.app.settings}</Dialog.Description>
@@ -179,12 +183,12 @@
           </section>
 
           <section class="fx-enter space-y-2" style="--fx-index: 3">
-            <BrowserAccessPanel {locale} spotlight={browserSpotlightActive} {notify} onChanged={refreshBrowserControl} onDone={refreshBrowserControl} />
+            <BrowserAccessPanel {locale} spotlight={browserSpotlightActive} notify={notifyBrowser} onChanged={refreshBrowserControl} onDone={refreshBrowserControl} />
           </section>
         </div>
       {:else}
         <div class="fx-enter pb-5 pt-3">
-          <ProviderSettings {locale} variant={onboarding ? 'onboarding' : 'panel'} spotlight={providerSpotlightActive} onChanged={refreshProviders} {notify} />
+          <ProviderSettings {locale} variant={onboarding ? 'onboarding' : 'panel'} spotlight={providerSpotlightActive} onChanged={refreshProviders} notify={notifyProvider} />
         </div>
       {/if}
       </div>
