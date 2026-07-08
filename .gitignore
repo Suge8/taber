@@ -15,7 +15,13 @@ Thumbs.db
 .flow/
 
 # temp / scratch
+.tmp/
 scripts/_qc-temp.mjs
+
+# extension release artifacts / signing keys
+*.crx
+*.pem
+*.key
 
 # env / secrets (do not commit credentials)
 .env

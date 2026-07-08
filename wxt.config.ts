@@ -6,10 +6,15 @@ import { fileURLToPath } from 'node:url';
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 const enableDebugger = process.env.TABER_ENABLE_DEBUGGER === '1';
 const debugArtifact = process.env.TABER_DEBUG_ARTIFACT === '1';
+const outDirTemplate = process.env.TABER_OUT_DIR_TEMPLATE ?? (debugArtifact ? '{{browser}}-mv{{manifestVersion}}-dev' : undefined);
 
 export default defineConfig({
   modules: ['@wxt-dev/module-svelte'],
-  outDirTemplate: debugArtifact ? '{{browser}}-mv{{manifestVersion}}-dev' : undefined,
+  outDirTemplate,
+  zip: {
+    artifactTemplate: 'taber-v{{version}}-{{browser}}-{{manifestVersion}}.zip',
+    zipSources: false,
+  },
   vite: () => ({
     define: {
       __TABER_ENABLE_DEBUGGER__: JSON.stringify(enableDebugger),
@@ -23,7 +28,7 @@ export default defineConfig({
   }),
   manifest: {
     name: 'Taber',
-    description: 'Supervised browser agent side panel.',
+    description: 'Browser agent side panel for reading pages and using the web.',
     minimum_chrome_version: '135',
     permissions: [
       'storage',
@@ -36,7 +41,12 @@ export default defineConfig({
       'identity',
       ...(enableDebugger ? ['debugger'] : []),
     ],
-    host_permissions: ['https://auth.openai.com/*', 'https://chatgpt.com/*'],
+    host_permissions: [
+      'https://auth.openai.com/*',
+      'https://chatgpt.com/*',
+      'https://auth.x.ai/*',
+      'https://api.x.ai/*',
+    ],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
     icons: {
       16: '/icons/icon-16.png',
@@ -54,6 +64,9 @@ export default defineConfig({
         32: '/icons/icon-32.png',
       },
     },
+    web_accessible_resources: [
+      { resources: ['icons/icon-24.png'], matches: ['http://*/*', 'https://*/*'] },
+    ],
     commands: {
       'toggle-side-panel': {
         suggested_key: {

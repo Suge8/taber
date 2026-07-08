@@ -14,6 +14,7 @@ const requiredPermissions = [
   'webNavigation',
   'activeTab',
   'offscreen',
+  'identity',
 ];
 
 for (const extensionDir of extensionDirs) {
@@ -34,6 +35,8 @@ async function verifyExtension(extensionDir) {
   assert(!hostPermissions.includes('<all_urls>'), `${extensionDir}: production host_permissions must not include <all_urls>`);
   assert(hostPermissions.includes('https://auth.openai.com/*'), `${extensionDir}: missing auth.openai.com host permission`);
   assert(hostPermissions.includes('https://chatgpt.com/*'), `${extensionDir}: missing chatgpt.com host permission`);
+  assert(hostPermissions.includes('https://auth.x.ai/*'), `${extensionDir}: missing auth.x.ai host permission`);
+  assert(hostPermissions.includes('https://api.x.ai/*'), `${extensionDir}: missing api.x.ai host permission`);
   assert(optionalHostPermissions.includes('http://*/*'), `${extensionDir}: missing optional http host permission`);
   assert(optionalHostPermissions.includes('https://*/*'), `${extensionDir}: missing optional https host permission`);
 
@@ -45,6 +48,8 @@ async function verifyExtension(extensionDir) {
   for (const file of ['background.js', 'sidepanel.html', 'offscreen.html', 'sandbox.html']) {
     await access(path.join(extensionDir, file));
   }
+
+  console.info(JSON.stringify({ extensionDir, hasDebugger: permissions.includes('debugger'), hasCookies: permissions.includes('cookies') }));
 }
 
 function assert(condition, message) {
