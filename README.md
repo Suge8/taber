@@ -1,161 +1,255 @@
-# Taber
+<p align="center">
+  <img src="public/brand/taber-logo.webp" width="112" alt="Taber logo">
+</p>
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<h1 align="center">Taber</h1>
 
-A supervised browser agent that runs in a Chrome/Edge side panel. It reads pages, extracts documents and images, navigates across tabs, fills ordinary forms, and explains page failures — while you watch from the side panel and can stop it anytime. Work continues in an offscreen host after the panel closes.
+<p align="center">
+  <strong>A browser agent side panel for Chrome and Edge.</strong><br>
+  Read pages → extract documents and images → use the browser → keep the trail local.<br>
+  Chrome / Edge 侧边栏浏览器 Agent：读页面、提取文档和图片、操作浏览器，并在本机保留过程记录。
+</p>
 
-> **Languages**: [English](#english) · [中文](#中文)
+<p align="center">
+  <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+</p>
 
 ---
 
 ## English
 
-### Features
+Taber gives you a browser agent inside the side panel. Open a page, describe the task, and let Taber read, extract, navigate, click, fill, and explain the result with a visible tool trail.
 
-- **Supervised, interruptible** — tools run automatically, you pause or stop at any point; no per-step approval.
-- **Offscreen AgentHost** — the agent loop lives in a hidden extension page, so tasks survive closing the side panel.
-- **Narrow tool boundary** — a small fixed set of tools: document extraction, image extraction, navigation, and a controlled browser REPL. No open-ended Extension API bridge.
-- **Local-first event log** — every message, tool call, and state change is persisted in Dexie (IndexedDB) and the UI is rebuilt from that log.
-- **Provider-agnostic** — bring any OpenAI-compatible endpoint, or authenticate with a ChatGPT/Codex provider via PKCE. Credentials stay local.
-- **Least-privilege store build** — no default `<all_urls>` host permission, no `debugger` permission in the shipped build. The debugger tool is only available in a local debug build.
+### Highlights
 
-### Requirements
+- **Read the current page**: articles, full pages, selections, tables, PDFs, and text files.
+- **Work with visuals**: viewport screenshots, page images, canvas output, and background images.
+- **Use the browser**: navigate, click, fill, scroll, wait, and inspect page state through a small fixed tool set.
+- **Bring your model**: OpenAI API key, OpenAI-compatible endpoint, ChatGPT/Codex subscription login, or xAI/Grok subscription login.
+- **Keep context local**: sessions, messages, credentials, and tool events stay in the extension database.
+- **Low-permission release build**: no `debugger` permission; website access is granted during Browser Access setup.
 
-- Node.js `>= 22.6` (tests use native type stripping)
+### Install from GitHub Release
+
+1. Download `taber-v0.2.0-chrome-mv3.zip` from the latest GitHub Release.
+2. Unzip it. Chrome cannot load the zip directly.
+3. Open `chrome://extensions`.
+4. Turn on **Developer mode**.
+5. Click **Load unpacked**.
+6. Select the extracted folder that contains `manifest.json`.
+7. Open Taber from the browser side panel. Default shortcut: `Alt+E`, or `⌘E` on macOS.
+
+### Start
+
+1. Open a page you want Taber to work on.
+2. Open the side panel.
+3. Choose a provider in settings:
+   - OpenAI API key
+   - OpenAI-compatible endpoint
+   - ChatGPT/Codex subscription login
+   - xAI/Grok subscription login
+4. Complete Browser Access setup when Taber asks for website access.
+5. Ask a task:
+
+```text
+Summarize this page.
+Extract the pricing table.
+Find the signup form and fill the basic fields.
+Compare the visible plans and list the tradeoffs.
+```
+
+### Privacy and permissions
+
+- The release build does not request `debugger` and does not read cookies.
+- Model credentials stay in IndexedDB. Taber uses them only for the provider you select.
+- Page content, screenshots, documents, prompts, and tool results can be sent to the selected model provider to complete your task.
+- `browserjs` page-script execution only runs after you enable it in Browser Access.
+
+See [`SECURITY.md`](SECURITY.md) for vulnerability reporting.
+
+<details>
+<summary>Advanced: build, package, test</summary>
+
+#### Requirements
+
+- Node.js `>= 22.6`
 - pnpm `>= 9`
 - Chrome or Edge `>= 135`
 
-### Install (development)
+#### Build from source
 
 ```bash
 git clone <your-repo-url> taber
 cd taber
 pnpm install
-pnpm build:chrome      # produces .output/chrome-mv3
+pnpm build:chrome
 ```
 
-Then load it as an unpacked extension:
+Load `.output/chrome-mv3` as an unpacked extension in `chrome://extensions`.
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. **Load unpacked** → select `.output/chrome-mv3`
-4. Open the side panel (Alt+E on macOS: ⌘E)
-
-For Edge, replace `build:chrome` with `build:edge` and load `.output/edge-mv3`.
-
-For live reload during development:
+For Edge:
 
 ```bash
-pnpm dev                # WXT dev mode with hot reload
-pnpm dev:debug          # same, with debugger tool enabled
+pnpm build:edge
 ```
 
-### Usage
+Load `.output/edge-mv3` in `edge://extensions`.
 
-Open the side panel on any page, pick a model provider in settings, then describe a task — e.g. "summarize this page", "extract the pricing table", or "fill the contact form on this page". You can watch each tool call in the timeline and stop the task whenever you want.
-
-### Testing
+#### Development
 
 ```bash
-pnpm run test:unit     # ~20 unit suites via node --experimental-strip-types
-pnpm run test:e2e      # deterministic in-process E2E scenarios
-pnpm run test:ci       # full pipeline: build + typecheck + unit + e2e + DB integration
-pnpm run test:ci:runtime  # optional real-browser smoke (requires local Chrome + secrets)
+pnpm dev
+pnpm dev:debug  # local debugger build
 ```
 
-### Security notes
+#### Package a Chrome release
 
-- The shipped (store) build never requests `debugger` and never reads cookies. Only a `TABER_ENABLE_DEBUGGER=1` local build exposes the debugger tool.
-- Model provider credentials are stored locally in the extension's IndexedDB and never leave the device except to call the provider you configured.
-- `browserjs` (page-script execution) runs only after you explicitly consent in **Browser Access** onboarding, and only on the page `MAIN` runtime.
+```bash
+pnpm run zip:chrome
+```
 
-See [`SECURITY.md`](SECURITY.md) for the disclosure policy.
+Upload `.output/taber-v0.2.0-chrome-mv3.zip` to the GitHub Release.
 
-### Architecture
+#### Verify
 
-Architectural decisions are recorded as ADRs in [`docs/adr/`](docs/adr/). Module map is in [`AGENTS.md`](AGENTS.md). Product and design context in [`PRODUCT.md`](PRODUCT.md) and [`DESIGN.md`](DESIGN.md).
+```bash
+pnpm run test:unit
+pnpm run test:e2e
+pnpm run test:ci
+pnpm run test:ci:runtime  # optional real-browser smoke
+```
 
-### Contributing
+#### Project docs
 
-Contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- Changelog: [`CHANGELOG.md`](CHANGELOG.md)
+- Architecture decisions: [`docs/adr/`](docs/adr/)
+- Module map: [`AGENTS.md`](AGENTS.md)
+- Product and design context: [`PRODUCT.md`](PRODUCT.md), [`DESIGN.md`](DESIGN.md)
+- Contributions: [`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-### License
-
-Apache License 2.0. See [`LICENSE`](LICENSE).
+</details>
 
 ---
 
 ## 中文
 
-### 功能
+Taber 把浏览器 Agent 放进侧边栏。打开页面，输入任务，Taber 可以阅读、提取、导航、点击、填写，并用可见的工具轨迹说明过程和结果。
 
-- **有人监督、可中断** — 工具默认自动执行，你随时暂停或停止；不做逐步审批。
-- **Offscreen AgentHost** — Agent 主循环跑在隐藏的扩展页面里，关掉侧边栏后任务继续。
-- **狭窄工具边界** — 一组小而固定的工具：文档提取、图片提取、导航、受控的浏览器 REPL。没有无边界 Extension API bridge。
-- **本地优先事件日志** — 每条消息、工具调用、状态变更都用 Dexie（IndexedDB）持久化，UI 从日志重建。
-- **供应商无关** — 接任意 OpenAI 兼容 endpoint，或通过 PKCE 登录 ChatGPT/Codex。凭证只存本地。
-- **最小权限上架构建** — 上架版默认无 `<all_urls>` host 权限，无 `debugger` 权限。debugger 工具只在本地 debug 构建里。
+### 亮点
 
-### 环境要求
+- **读取当前页面**：文章、整页、选中文本、表格、PDF 和文本文件。
+- **处理视觉内容**：当前视口截图、页面图片、canvas 和 background image。
+- **操作浏览器**：导航、点击、填写、滚动、等待和页面检查，能力收在一组固定工具里。
+- **连接你的模型**：OpenAI API key、OpenAI-compatible endpoint、ChatGPT/Codex 订阅登录、xAI/Grok 订阅登录。
+- **本地保存上下文**：会话、消息、凭证和工具事件保存在扩展数据库里。
+- **发布版低权限**：不带 `debugger` 权限；站点访问在 Browser Access 里授权。
 
-- Node.js `>= 22.6`（测试用原生 type stripping）
+### 从 GitHub Release 安装
+
+1. 在最新 GitHub Release 下载 `taber-v0.2.0-chrome-mv3.zip`。
+2. 解压。Chrome 不能直接加载 zip。
+3. 打开 `chrome://extensions`。
+4. 打开 **开发者模式**。
+5. 点击 **加载已解压的扩展程序**。
+6. 选择包含 `manifest.json` 的解压文件夹。
+7. 从浏览器侧边栏打开 Taber。默认快捷键：`Alt+E`，macOS 是 `⌘E`。
+
+### 开始使用
+
+1. 打开你要让 Taber 处理的网页。
+2. 打开侧边栏。
+3. 在设置里选择供应商：
+   - OpenAI API key
+   - OpenAI-compatible endpoint
+   - ChatGPT/Codex 订阅登录
+   - xAI/Grok 订阅登录
+4. 按提示完成 Browser Access 站点访问授权。
+5. 输入任务：
+
+```text
+总结这个页面。
+提取价格表。
+找到注册表单，填写基础字段。
+对比页面上的套餐，列出取舍。
+```
+
+### 隐私与权限
+
+- 发布版不请求 `debugger`，不读取 cookie。
+- 模型凭证保存在 IndexedDB，只用于调用你选择的供应商。
+- 为完成任务，Taber 可能把页面内容、截图、文档、提示词和工具结果发给你选择的模型供应商。
+- `browserjs` 页面脚本只在你在 Browser Access 里开启后运行。
+
+漏洞报告见 [`SECURITY.md`](SECURITY.md)。
+
+<details>
+<summary>高级：源码构建、打包、测试</summary>
+
+#### 环境要求
+
+- Node.js `>= 22.6`
 - pnpm `>= 9`
 - Chrome 或 Edge `>= 135`
 
-### 安装（开发）
+#### 从源码构建
 
 ```bash
 git clone <你的仓库地址> taber
 cd taber
 pnpm install
-pnpm build:chrome      # 产物在 .output/chrome-mv3
+pnpm build:chrome
 ```
 
-加载为未打包扩展：
+在 `chrome://extensions` 里加载 `.output/chrome-mv3`。
 
-1. 打开 `chrome://extensions`
-2. 打开 **开发者模式**
-3. **加载已解压的扩展程序** → 选 `.output/chrome-mv3`
-4. 打开侧边栏（Alt+E，macOS 为 ⌘E）
-
-Edge 把 `build:chrome` 换成 `build:edge`，加载 `.output/edge-mv3`。
-
-开发热重载：
+Edge：
 
 ```bash
-pnpm dev                # WXT dev 模式
-pnpm dev:debug          # 同上，开启 debugger 工具
+pnpm build:edge
 ```
 
-### 使用
+在 `edge://extensions` 里加载 `.output/edge-mv3`。
 
-在任意页面打开侧边栏，在设置里选好模型供应商，然后描述任务——比如"总结这个页面"、"提取价格表"、"填写本页的联系表单"。你可以在工具时间线上看每一步在做什么，随时停掉任务。
-
-### 测试
+#### 开发
 
 ```bash
-pnpm run test:unit     # 约 20 个单元套件，用 node --experimental-strip-types
-pnpm run test:e2e      # 进程内确定性 E2E 场景
-pnpm run test:ci       # 全流水线：构建 + 类型检查 + 单元 + E2E + DB 集成
-pnpm run test:ci:runtime  # 可选真实浏览器冒烟（需本地 Chrome 和密钥）
+pnpm dev
+pnpm dev:debug  # 本地 debugger 构建
 ```
 
-### 安全说明
+#### 打包 Chrome Release
 
-- 上架版绝不请求 `debugger`、绝不读 cookie。只有 `TABER_ENABLE_DEBUGGER=1` 的本地构建才暴露 debugger 工具。
-- 模型供应商凭证只存扩展的 IndexedDB，除调用你配置的供应商外不出本机。
-- `browserjs`（页面脚本执行）只在你在 **Browser Access** 引导里明确同意后启用，且只在页面 `MAIN` runtime 运行。
+```bash
+pnpm run zip:chrome
+```
 
-披露流程见 [`SECURITY.md`](SECURITY.md)。
+把 `.output/taber-v0.2.0-chrome-mv3.zip` 上传到 GitHub Release。
 
-### 架构
+#### 验证
 
-架构决策以 ADR 形式记录在 [`docs/adr/`](docs/adr/)。模块地图在 [`AGENTS.md`](AGENTS.md)。产品与设计背景见 [`PRODUCT.md`](PRODUCT.md) 和 [`DESIGN.md`](DESIGN.md)。
+```bash
+pnpm run test:unit
+pnpm run test:e2e
+pnpm run test:ci
+pnpm run test:ci:runtime  # 可选真实浏览器冒烟
+```
 
-### 贡献
+#### 项目文档
 
-欢迎贡献，见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
+- 更新日志：[`CHANGELOG.md`](CHANGELOG.md)
+- 架构决策：[`docs/adr/`](docs/adr/)
+- 模块地图：[`AGENTS.md`](AGENTS.md)
+- 产品与设计背景：[`PRODUCT.md`](PRODUCT.md)、[`DESIGN.md`](DESIGN.md)
+- 贡献指南：[`CONTRIBUTING.md`](CONTRIBUTING.md)
 
-### 许可证
+</details>
 
-Apache License 2.0，见 [`LICENSE`](LICENSE)。
+---
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE).

@@ -27,6 +27,9 @@ Project documents are split by purpose.
 - [`docs/adr/0008-run-one-global-agent-task.md`](adr/0008-run-one-global-agent-task.md)
 - [`docs/adr/0009-keep-debugger-tool-always-available.md`](adr/0009-keep-debugger-tool-always-available.md)
 - [`docs/adr/0010-build-document-extraction-with-lightweight-parsers.md`](adr/0010-build-document-extraction-with-lightweight-parsers.md)
+- [`docs/adr/0011-use-task-target-tab-as-browser-agent-workspace.md`](adr/0011-use-task-target-tab-as-browser-agent-workspace.md)
+- [`docs/adr/0012-use-openai-responses-provider-for-chatgpt-codex.md`](adr/0012-use-openai-responses-provider-for-chatgpt-codex.md)
+- [`docs/adr/0013-agent-instructions-v2.md`](adr/0013-agent-instructions-v2.md)
 
 ### Planning and UX
 
@@ -40,6 +43,7 @@ Project documents are split by purpose.
 
 ### Publishing
 
+- [`../CHANGELOG.md`](../CHANGELOG.md)
 - [`docs/store-compliance.md`](store-compliance.md) — Chrome Web Store disclosure facts (least-privilege policy)
 
 ### Governance
@@ -71,6 +75,9 @@ Project documents are split by purpose.
 - [`docs/adr/0008-run-one-global-agent-task.md`](adr/0008-run-one-global-agent-task.md) — 全局只跑一个 Agent 任务
 - [`docs/adr/0009-keep-debugger-tool-always-available.md`](adr/0009-keep-debugger-tool-always-available.md) — debugger 只在 debug 构建可用
 - [`docs/adr/0010-build-document-extraction-with-lightweight-parsers.md`](adr/0010-build-document-extraction-with-lightweight-parsers.md) — 用轻量解析器实现文档提取
+- [`docs/adr/0011-use-task-target-tab-as-browser-agent-workspace.md`](adr/0011-use-task-target-tab-as-browser-agent-workspace.md) — 任务级 target tab 是浏览器 Agent 工作区事实源
+- [`docs/adr/0012-use-openai-responses-provider-for-chatgpt-codex.md`](adr/0012-use-openai-responses-provider-for-chatgpt-codex.md) — 用 OpenAI Responses provider 驱动 ChatGPT Codex
+- [`docs/adr/0013-agent-instructions-v2.md`](adr/0013-agent-instructions-v2.md) — Agent 指令 v2
 
 ### 计划与 UX
 
@@ -84,6 +91,7 @@ Project documents are split by purpose.
 
 ### 发布
 
+- [`../CHANGELOG.md`](../CHANGELOG.md)
 - [`docs/store-compliance.md`](store-compliance.md) — Chrome Web Store 披露事实（最小权限策略）
 
 ### 治理

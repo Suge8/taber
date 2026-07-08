@@ -26,7 +26,7 @@ In scope:
 
 - privilege escalation through the extension (e.g. breaking the least-privilege permission policy in `wxt.config.ts` / `scripts/verify-build.mjs`);
 - leakage of model provider credentials stored in IndexedDB;
-- the PKCE/OAuth flow in `lib/codex-auth.ts` / `lib/codex-oauth.ts` (token theft, redirect-uri confusion, state reuse);
+- the PKCE/OAuth flows in `lib/codex-auth.ts` / `lib/codex-oauth.ts` and `lib/xai-auth.ts` / `lib/xai-oauth.ts` (token theft, redirect-uri confusion, state reuse);
 - bypass of the `browserjs` page-script consent gate;
 - escape of the browser REPL sandbox boundary.
 
@@ -70,7 +70,7 @@ Taber does not run a paid bug bounty. We will credit reporters in release notes 
 
 - 通过扩展提权（如破坏 `wxt.config.ts` / `scripts/verify-build.mjs` 里的最小权限策略）；
 - 存在 IndexedDB 的模型供应商凭证泄露；
-- `lib/codex-auth.ts` / `lib/codex-oauth.ts` 的 PKCE/OAuth 流程（token 被窃、redirect_uri 混淆、state 重用）；
+- `lib/codex-auth.ts` / `lib/codex-oauth.ts` 与 `lib/xai-auth.ts` / `lib/xai-oauth.ts` 的 PKCE/OAuth 流程（token 被窃、redirect_uri 混淆、state 重用）；
 - 绕过 `browserjs` 页面脚本同意门；
 - 逃出浏览器 REPL 沙箱边界。
 

@@ -6,7 +6,7 @@
 
 ## English
 
-Thanks for considering a contribution. Taber is a Chrome/Edge supervised browser agent; keeping the tool boundary narrow and the side panel calm is a hard constraint, not a nice-to-have.
+Thanks for considering a contribution. Taber is a Chrome/Edge browser agent side panel; keeping the tool boundary narrow and the side panel calm is a hard constraint, not a nice-to-have.
 
 ### Before you start
 
@@ -57,7 +57,7 @@ If your change touches permissions or `wxt.config.ts`, also run `pnpm build:chro
 
 ## 中文
 
-感谢你考虑贡献 Taber。Taber 是 Chrome/Edge 有监督的浏览器 Agent；保持工具边界狭窄、侧边栏安静是硬约束，不是可选项。
+感谢你考虑贡献 Taber。Taber 是 Chrome/Edge 侧边栏浏览器 Agent；保持工具边界狭窄、侧边栏安静是硬约束，不是可选项。
 
 ### 开始前先看
 

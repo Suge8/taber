@@ -32,6 +32,16 @@ pnpm run test:ci
 
 `pnpm run test:extension:dry` builds Chrome MV3 and checks extension artifacts. It does not prove runtime behavior.
 
+## Release packaging
+
+Build and zip the Chrome MV3 release artifact:
+
+```bash
+pnpm run zip:chrome
+```
+
+This writes `.output/taber-v0.2.0-chrome-mv3.zip` and verifies `.output/chrome-mv3/manifest.json`. Upload the zip to GitHub Releases. Users must unzip it, then load the extracted folder through Chrome **Developer mode** → **Load unpacked**.
+
 ## Runtime browser smoke
 
 `pnpm dev` is for manual WXT development and loads `.output/chrome-mv3-dev`. Runtime smoke tests package `.output/chrome-mv3`, so they match the installable extension artifact.
