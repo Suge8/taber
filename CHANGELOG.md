@@ -4,6 +4,44 @@
   <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
 </p>
 
+## 0.2.1 - 2026-07-09
+
+### English
+
+#### Changed
+
+- Improved the browser Agent efficiency loop: read minimal evidence, take one action, then verify fresh state.
+- Clarified tool guidance so page changes use auto-wait or `waitFor`, not sleep/setTimeout polling.
+- Made `browser.snapshot` ignore accidental target/action fields instead of failing.
+
+#### Fixed
+
+- Avoided an extra full snapshot after successful main-document browser actions when no iframes are present.
+- Preserved frame-aware routing for iframe pages and ambiguity checks.
+
+#### Added
+
+- Tool run events and stored tool records now include `durationMs` for slow-tool inspection in side panel details.
+- Added ADR 0014 documenting the browser Agent efficiency loop.
+
+### 中文
+
+#### 变更
+
+- 优化浏览器 Agent 执行循环：先读最小证据，一次动作，再验证新状态。
+- 明确工具指引：页面变化等待用自动等待或 `waitFor`，不用 sleep/setTimeout 轮询。
+- `browser.snapshot` 忽略模型误带的 target/action 字段，不再因此失败。
+
+#### 修复
+
+- 无 iframe 页面里，主文档浏览器动作成功后不再额外做一次完整 snapshot。
+- iframe 页面继续保留 frame-aware 路由和歧义检查。
+
+#### 新增
+
+- 工具运行事件和本地记录新增 `durationMs`，侧边栏技术详情可查看慢工具。
+- 新增 ADR 0014，记录浏览器 Agent 高效执行循环。
+
 ## 0.2.0 - 2026-07-09
 
 ### English

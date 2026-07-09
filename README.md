@@ -35,7 +35,7 @@ Taber gives you a browser agent inside the side panel. Open a page, describe the
 
 ### Install from GitHub Release
 
-1. Download `taber-v0.2.0-chrome-mv3.zip` from the latest GitHub Release.
+1. Download `taber-v0.2.1-chrome-mv3.zip` from the latest GitHub Release.
 2. Unzip it. Chrome cannot load the zip directly.
 3. Open `chrome://extensions`.
 4. Turn on **Developer mode**.
@@ -112,7 +112,7 @@ pnpm dev:debug  # local debugger build
 pnpm run zip:chrome
 ```
 
-Upload `.output/taber-v0.2.0-chrome-mv3.zip` to the GitHub Release.
+Upload `.output/taber-v0.2.1-chrome-mv3.zip` to the GitHub Release.
 
 #### Verify
 
@@ -150,7 +150,7 @@ Taber 把浏览器 Agent 放进侧边栏。打开页面，输入任务，Taber �
 
 ### 从 GitHub Release 安装
 
-1. 在最新 GitHub Release 下载 `taber-v0.2.0-chrome-mv3.zip`。
+1. 在最新 GitHub Release 下载 `taber-v0.2.1-chrome-mv3.zip`。
 2. 解压。Chrome 不能直接加载 zip。
 3. 打开 `chrome://extensions`。
 4. 打开 **开发者模式**。
@@ -227,7 +227,7 @@ pnpm dev:debug  # 本地 debugger 构建
 pnpm run zip:chrome
 ```
 
-把 `.output/taber-v0.2.0-chrome-mv3.zip` 上传到 GitHub Release。
+把 `.output/taber-v0.2.1-chrome-mv3.zip` 上传到 GitHub Release。
 
 #### 验证
 

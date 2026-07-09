@@ -40,7 +40,7 @@ Build and zip the Chrome MV3 release artifact:
 pnpm run zip:chrome
 ```
 
-This writes `.output/taber-v0.2.0-chrome-mv3.zip` and verifies `.output/chrome-mv3/manifest.json`. Upload the zip to GitHub Releases. Users must unzip it, then load the extracted folder through Chrome **Developer mode** → **Load unpacked**.
+This writes `.output/taber-v0.2.1-chrome-mv3.zip` and verifies `.output/chrome-mv3/manifest.json`. Upload the zip to GitHub Releases. Users must unzip it, then load the extracted folder through Chrome **Developer mode** → **Load unpacked**.
 
 ## Runtime browser smoke
 
