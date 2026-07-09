@@ -2,7 +2,7 @@
 
 ## 目标
 
-做一个 Chrome/Edge 侧边栏浏览器 Agent：用户可监督、可中断，能阅读页面、提取文档和图片、跨标签导航、执行受控浏览器自动化，并在侧边栏关闭后继续完成已启动任务。
+做一个强大全能的 Chrome/Edge 侧边栏浏览器 Agent：能阅读页面、提取文档和图片、fetch-first 直接拓取公开 URL、跨标签导航、执行受控浏览器自动化、读写会话文件并沉淀站点技能，并在侧边栏关闭后继续完成已启动任务。
 
 ## 成功标准
 
@@ -53,15 +53,16 @@ Dexie               单一本地数据源，保存配置、会话、事件日志
 
 ## 顶层工具
 
-上架版固定 5 个：
+上架版固定 6 个：
 
 1. `getDocument`
 2. `extractImage`
 3. `navigate`
 4. `browser`
 5. `browserRepl`
+6. `fs`
 
-`browser` 是页面操作主路径；`browserRepl` 是高级 fallback。debug 构建额外暴露 `debugger`。
+`browser` 是页面操作主路径；`browserRepl` 是高级 fallback；`fs` 是会话文件工作区与站点技能的 ls/read/write（见 ADR 0015/0016）。debug 构建额外暴露 `debugger`。
 
 ## browser API
 
@@ -69,7 +70,7 @@ Dexie               单一本地数据源，保存配置、会话、事件日志
 
 ```txt
 action: "snapshot" | "click" | "fill" | "press"
-target?: { ref: string } | { role, name } | { label } | { text } | { selector }
+target?: { ref: string } | { role, name } | { label } | { text } | { selector } | { x, y }
 value?: string  // fill
 key?: string    // press
 scope?: "viewport" | "page"  // snapshot state
@@ -78,7 +79,7 @@ limit?: number  // snapshot state, max 80
 
 执行语义：
 
-- 优先用用户看得懂的 locator：`{ text }`、`{ role, name }`、`{ label }`、`{ ref }`；`{ selector }` 只作为 fallback。
+- 优先用用户看得懂的 locator：`{ text }`、`{ role, name }`、`{ label }`、`{ ref }`；`{ selector }` 只作为 fallback；`{ x, y }` 是 canvas/纯视觉 UI 的最后手段（viewport CSS px，elementFromPoint 递归 open shadow root，命中 iframe 时明确失败）。
 - `PageTarget` 一次只允许一种 locator；`role` 必须和 `name` 成对。
 - `snapshot` 返回紧凑语义状态：标题、URL、可见文本摘要、可操作元素的 role/name/state/rect/href/value/ref/hints，以及 `frames[]` 边界；同源 iframe 返回可读摘要，跨域 iframe 只返回 metadata/原因；默认最多 30 个元素，最多 80 个。
 - `click/fill/press` 都在动作后等待 DOM 稳定，返回 `ok/evidence/state`；`state` 是最新轻量页面状态，模型不需要手写 observe/wait/observe。
@@ -153,6 +154,8 @@ debug 构建：DOM 操作 → userScripts 事件 → CDP/native fallback
 - `toolRuns`
 - `agentEvents`
 - `settings`
+- `skills`
+- `files`（db v3，会话文件工作区，随会话清理）
 
 规则：
 
@@ -234,13 +237,13 @@ debug 构建：DOM 操作 → userScripts 事件 → CDP/native fallback
 
 ### 6. getDocument
 
-工具契约：`source: currentPage | pdf | file`。
+工具契约：`source: currentPage | url | file`。
 
-第一版范围：
+范围：
 
 - `currentPage`：`mode: article | page | selection`，读取当前网页正文、全文、选中文本，可包含表格；open shadow root 会并入可读 DOM，`frames[]` 标明 iframe 可读性，同源 iframe 文本只放在对应 frame 条目下，跨域 iframe 只列 metadata/原因。
-- `pdf`：通过 `url` 读取 PDF 文本。
-- `file`：读取 UI 已提供的 `fileText`。
+- `url`：fetch-first，不开 tab 直接拓取 http/https 网页或 PDF（content-type 自动分流）；失败时明确引导回退 navigate + currentPage（见 ADR 0017）。
+- `file`：按名读取 `/workspace` 文件（pdf/docx/文本）为文本。
 - 成功返回 `ok:true` + `content/contentChars/truncated`；可恢复问题返回 `ok:false` + `code/message/retryHint`。
 - JSON schema 抽取交给模型二次处理。
 
@@ -388,7 +391,6 @@ debug 构建：DOM 操作 → userScripts 事件 → CDP/native fallback
 
 - 反检测/隐身自动化。
 - cookies 读取。
-- reusable site skills。
 - Firefox/Safari 兼容。
 - fullPage 拼接截图。
 - 每窗口/每标签页并发任务。

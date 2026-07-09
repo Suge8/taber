@@ -32,7 +32,9 @@ Depending on the requested task, Taber may process:
 - page tables and document text;
 - viewport screenshots or extracted page images/canvas/background images;
 - URLs, titles, and tool results for authorized/current tabs;
-- user prompts and conversation history stored locally for the task timeline.
+- user prompts and conversation history stored locally for the task timeline;
+- files the user uploads for a task (PDF/Word/text) and files the agent generates, stored locally per session and deleted with the session;
+- site skills: reusable site knowledge (flows, pitfalls, API endpoints) written by the agent, stored locally and manageable by the user in the sidebar. Skills must not contain secrets or personal data.
 
 Taber does not collect this data for advertising and does not sell it.
 

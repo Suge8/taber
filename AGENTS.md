@@ -12,6 +12,7 @@
 - 后台 broker 与扩展生命周期：`entrypoints/background.ts`、`lib/chrome-api-broker.ts`、`lib/offscreen-lifecycle.ts`、`lib/agent-host-controller.ts`
 - Offscreen AgentHost：`entrypoints/offscreen/main.ts`、`lib/agent-instructions.ts`、`lib/agent-tools.ts`
 - Agent 事件投影：`lib/agent-event-projection.ts`、`lib/agent-event-text.ts`、`lib/sidepanel-view.ts`、`lib/model-context.ts`
+- 站点技能与文件工作区：`lib/skills.ts`、`lib/skills-seeds.ts`、`lib/workspace-files.ts`、`lib/fs-tool.ts`、`lib/document-export.ts`、`docs/adr/0015`、0016、0017
 - 固定工具：`lib/get-document.ts`、`lib/get-document-page.ts`、`lib/document-markdown.ts`、`lib/extract-image.ts`、`lib/navigate.ts`、`lib/browser-tool.ts`、`lib/browser-repl.ts`、`lib/browser-repl-command.ts`、`lib/browser-repl-executor.ts`、`lib/browser-repl-page.ts`、`lib/browser-repl-page-runtime.ts`、`lib/browser-repl-page-locator.ts`、`lib/browser-repl-page-introspection.ts`、`lib/browser-repl-code.ts`、`lib/browser-js-page-script.ts`、`lib/browser-repl-visual-page.ts`、`lib/debugger-tool.ts`
 - 侧边栏 UI：`entrypoints/sidepanel/App.svelte`、`entrypoints/sidepanel/SourcesBar.svelte`、`entrypoints/sidepanel/Timeline.svelte`、`lib/sidepanel-i18n.ts`、`lib/components/ai-elements/tool/tool-header.svelte`
 - 官方订阅 UI：`SubscriptionHub.svelte`、`SubscriptionLoginCard.svelte`、`OpenAILogo.svelte`、`GrokLogo.svelte`、`lib/subscription-login.ts`
