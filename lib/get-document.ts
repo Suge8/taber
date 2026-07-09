@@ -13,8 +13,8 @@ export type GetDocumentCurrentPageMode = 'article' | 'page' | 'selection';
 
 export type GetDocumentInput =
   | { source: 'currentPage'; mode: GetDocumentCurrentPageMode; tabId?: number; includeTables?: boolean }
-  | { source: 'pdf'; url: string }
-  | { source: 'file'; fileName?: string; fileText: string };
+  | { source: 'url'; url: string; mode?: 'article' | 'page'; includeTables?: boolean }
+  | { source: 'file'; name: string };
 
 type GetDocumentSuccessBase = {
   ok: true;
@@ -32,10 +32,10 @@ type GetDocumentSuccessBase = {
 
 export type GetDocumentSuccess =
   | (GetDocumentSuccessBase & { source: 'currentPage'; mode: GetDocumentCurrentPageMode })
-  | (GetDocumentSuccessBase & { source: 'pdf'; url: string })
+  | (GetDocumentSuccessBase & { source: 'url'; url: string })
   | (GetDocumentSuccessBase & { source: 'file' });
 
-export type GetDocumentErrorCode = 'NO_SELECTION' | 'NO_READABLE_CONTENT' | 'REMOTE_FETCH_FAILED' | 'PAGE_ACCESS_REQUIRED';
+export type GetDocumentErrorCode = 'NO_SELECTION' | 'NO_READABLE_CONTENT' | 'REMOTE_FETCH_FAILED' | 'PAGE_ACCESS_REQUIRED' | 'FILE_NOT_FOUND';
 
 export type GetDocumentRecoverableError = {
   ok: false;
@@ -59,21 +59,20 @@ export const getDocumentInputJsonSchema = {
   additionalProperties: false,
   required: ['source'],
   properties: {
-    source: { type: 'string', enum: ['currentPage', 'pdf', 'file'], description: 'currentPage reads the controlled browser tab DOM; pdf fetches a PDF URL; file uses text already provided by the UI.' },
-    mode: { type: 'string', enum: ['article', 'page', 'selection'], description: 'Required for source:"currentPage". article uses Readability with page fallback; page reads full DOM Markdown; selection reads selected text only.' },
-    includeTables: { type: 'boolean', description: 'Only for source:"currentPage". Include extracted table objects with stable rows and Markdown table text.' },
-    url: { type: 'string', minLength: 1, description: 'Required for source:"pdf". PDF URL.' },
-    fileName: { type: 'string', description: 'Only for source:"file". Display name for the provided text.' },
-    fileText: { type: 'string', description: 'Required for source:"file". Plain text file content supplied by the UI.' },
+    source: { type: 'string', enum: ['currentPage', 'url', 'file'], description: 'currentPage reads the controlled browser tab DOM; url fetches an http/https page or PDF directly without opening a tab (fastest for static/public content); file reads an uploaded or generated /workspace file (pdf, docx, or text) as text.' },
+    mode: { type: 'string', enum: ['article', 'page', 'selection'], description: 'For source:"currentPage" (required) and source:"url" (optional, defaults to article). article uses Readability with page fallback; page reads full DOM Markdown; selection reads selected text only (currentPage only).' },
+    includeTables: { type: 'boolean', description: 'For source:"currentPage" and source:"url". Include extracted table objects with stable rows and Markdown table text.' },
+    url: { type: 'string', minLength: 1, description: 'Required for source:"url". http/https URL of a webpage or PDF.' },
+    name: { type: 'string', minLength: 1, description: 'Required for source:"file". Workspace file name as listed by fs ls, e.g. "report.docx".' },
   },
 } as const;
 
 const currentPageInputKeys = new Set(['source', 'mode', 'tabId', 'includeTables']);
-const pdfInputKeys = new Set(['source', 'url']);
-const fileInputKeys = new Set(['source', 'fileName', 'fileText']);
+const urlInputKeys = new Set(['source', 'url', 'mode', 'includeTables']);
+const fileInputKeys = new Set(['source', 'name']);
 
 type CurrentPageDocumentInput = Extract<GetDocumentInput, { source: 'currentPage' }>;
-type PdfDocumentInput = Extract<GetDocumentInput, { source: 'pdf' }>;
+type UrlDocumentInput = Extract<GetDocumentInput, { source: 'url' }>;
 type FileDocumentInput = Extract<GetDocumentInput, { source: 'file' }>;
 
 export function parseGetDocumentInput(value: unknown): GetDocumentInput {
@@ -82,24 +81,24 @@ export function parseGetDocumentInput(value: unknown): GetDocumentInput {
 
   const source = readSource(value.source);
   if (source === 'currentPage') return readCurrentPageInput(value);
-  if (source === 'pdf') return readPdfInput(value);
+  if (source === 'url') return readUrlInput(value);
   return readFileInput(value);
 }
 
 export function createGetDocumentController(options: {
   getCurrentTabId(): Promise<number>;
   executeInTab(tabId: number, input: CurrentPageDocumentInput): Promise<PageDocument>;
-  fetchText?: (url: string) => Promise<string>;
-  fetchArrayBuffer(url: string): Promise<ArrayBuffer>;
+  fetchDocument(url: string): Promise<{ contentType: string; data: ArrayBuffer; finalUrl?: string }>;
+  readFile?: (name: string) => Promise<{ mimeType: string; data: ArrayBuffer } | undefined>;
 }) {
-  function run(value: PdfDocumentInput): Promise<GetDocumentResult>;
-  function run(value: FileDocumentInput): Promise<Extract<GetDocumentSuccess, { source: 'file' }>>;
+  function run(value: UrlDocumentInput): Promise<GetDocumentResult>;
+  function run(value: FileDocumentInput): Promise<GetDocumentResult>;
   function run(value: CurrentPageDocumentInput): Promise<GetDocumentResult>;
   function run(value: unknown): Promise<GetDocumentResult>;
   async function run(value: unknown): Promise<GetDocumentResult> {
     const input = parseGetDocumentInput(value);
-    if (input.source === 'file') return fileResult(input);
-    if (input.source === 'pdf') return extractPdf(input, options.fetchArrayBuffer);
+    if (input.source === 'file') return extractWorkspaceFile(input, options.readFile);
+    if (input.source === 'url') return extractUrl(input, options.fetchDocument);
 
     const tabId = input.tabId ?? (await options.getCurrentTabId());
     let snapshot: PageDocument;
@@ -135,18 +134,24 @@ function readCurrentPageInput(value: Record<string, unknown>): CurrentPageDocume
   return input;
 }
 
-function readPdfInput(value: Record<string, unknown>): PdfDocumentInput {
-  rejectUnknownInputs(value, pdfInputKeys, 'pdf');
-  if (!('url' in value)) throw new Error('getDocument.pdf requires url');
-  return { source: 'pdf', url: readNonEmptyString(value.url, 'url') };
+function readUrlInput(value: Record<string, unknown>): UrlDocumentInput {
+  rejectUnknownInputs(value, urlInputKeys, 'url');
+  if (!('url' in value)) throw new Error('getDocument.url requires url');
+  const url = readNonEmptyString(value.url, 'url');
+  if (!/^https?:\/\//i.test(url)) throw new Error('getDocument.url only supports http/https URLs');
+  const input: UrlDocumentInput = { source: 'url', url };
+  if ('mode' in value) {
+    if (value.mode !== 'article' && value.mode !== 'page') throw new Error(`Invalid getDocument.url mode: ${String(value.mode)}`);
+    input.mode = value.mode;
+  }
+  if ('includeTables' in value) input.includeTables = readBoolean(value.includeTables, 'includeTables');
+  return input;
 }
 
 function readFileInput(value: Record<string, unknown>): FileDocumentInput {
   rejectUnknownInputs(value, fileInputKeys, 'file');
-  if (!('fileText' in value)) throw new Error('getDocument.file requires fileText');
-  const input: FileDocumentInput = { source: 'file', fileText: readString(value.fileText, 'fileText') };
-  if ('fileName' in value) input.fileName = readString(value.fileName, 'fileName');
-  return input;
+  if (!('name' in value)) throw new Error('getDocument.file requires name');
+  return { source: 'file', name: readNonEmptyString(value.name, 'name') };
 }
 
 function selectionResult(snapshot: PageDocument, input: CurrentPageDocumentInput): GetDocumentResult {
@@ -209,8 +214,28 @@ function frameFields(frames: PageDocumentFrame[] | undefined) {
   return frames?.length ? { frames } : {};
 }
 
-function fileResult(input: FileDocumentInput): GetDocumentResult {
-  return { ok: true as const, source: 'file' as const, title: input.fileName, ...contentFields(input.fileText) };
+async function extractWorkspaceFile(input: FileDocumentInput, readFile: ((name: string) => Promise<{ mimeType: string; data: ArrayBuffer } | undefined>) | undefined): Promise<GetDocumentResult> {
+  const file = await readFile?.(input.name);
+  if (!file) {
+    return {
+      ok: false,
+      code: 'FILE_NOT_FOUND',
+      message: `Workspace file not found: ${input.name}.`,
+      retryHint: 'Use fs ls to list available /workspace files.',
+    };
+  }
+  const content = await workspaceFileText(file);
+  if (!content.trim()) return { ok: false, code: 'NO_READABLE_CONTENT', message: `No readable text in file: ${input.name}.` };
+  return { ok: true as const, source: 'file' as const, title: input.name, ...contentFields(content, ARTICLE_CONTENT_LIMIT) };
+}
+
+async function workspaceFileText(file: { mimeType: string; data: ArrayBuffer }): Promise<string> {
+  if (file.mimeType === 'application/pdf') return pdfBytesToText(file.data);
+  if (file.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    const { docxToText } = await import('./document-export.ts');
+    return docxToText(file.data);
+  }
+  return new TextDecoder().decode(file.data);
 }
 
 async function parseArticleHtml(html: string, url?: string) {
@@ -222,15 +247,45 @@ async function parseArticleHtml(html: string, url?: string) {
   return content ? { title: article.title ?? undefined, url, content } : undefined;
 }
 
-async function extractPdf(input: PdfDocumentInput, fetchArrayBuffer: (url: string) => Promise<ArrayBuffer>): Promise<GetDocumentResult> {
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  let bytes: ArrayBuffer;
+async function extractUrl(input: UrlDocumentInput, fetchDocument: (url: string) => Promise<{ contentType: string; data: ArrayBuffer; finalUrl?: string }>): Promise<GetDocumentResult> {
+  let fetched: { contentType: string; data: ArrayBuffer; finalUrl?: string };
   try {
-    bytes = await fetchArrayBuffer(input.url);
+    fetched = await fetchDocument(input.url);
   } catch (error) {
     if (isTaskAborted(error)) throw error;
     return remoteFetchFailed();
   }
+  const url = fetched.finalUrl ?? input.url;
+  if (fetched.contentType.includes('application/pdf') || /\.pdf(?:$|[?#])/i.test(url)) {
+    const content = await pdfBytesToText(fetched.data);
+    if (!content) return noRemoteContent(url);
+    return { ok: true as const, source: 'url' as const, url, ...contentFields(content, ARTICLE_CONTENT_LIMIT) };
+  }
+  const html = new TextDecoder().decode(fetched.data);
+  const page = extractDocumentMarkdownFromHtml(html, { includeTables: input.includeTables });
+  const htmlTitle = /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() || undefined;
+  if ((input.mode ?? 'article') === 'article') {
+    const readable = await parseArticleHtml(html, url).catch(() => undefined);
+    if (readable?.content) {
+      return { ok: true as const, source: 'url' as const, url, title: readable.title ?? htmlTitle, ...contentFields(readable.content, ARTICLE_CONTENT_LIMIT), ...tableFields(page.tables, input.includeTables) };
+    }
+  }
+  const content = page.markdown || page.article || '';
+  if (!content.trim()) return noRemoteContent(url);
+  return { ok: true as const, source: 'url' as const, url, title: htmlTitle, ...(input.mode !== 'page' ? { fallback: 'page' as const } : {}), ...contentFields(content, PAGE_CONTENT_LIMIT), ...tableFields(page.tables, input.includeTables) };
+}
+
+function noRemoteContent(url: string): GetDocumentRecoverableError {
+  return {
+    ok: false,
+    code: 'NO_READABLE_CONTENT',
+    message: `No readable content at ${url}. The page may require JavaScript rendering or login.`,
+    retryHint: 'Open it in the browser instead: navigate open, then getDocument source:"currentPage".',
+  };
+}
+
+async function pdfBytesToText(bytes: ArrayBuffer): Promise<string> {
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
   const loadingTask = pdfjs.getDocument({ data: new Uint8Array(bytes), disableWorker: true, useSystemFonts: true } as never);
   const pdf = await loadingTask.promise;
   const pages: string[] = [];
@@ -239,9 +294,7 @@ async function extractPdf(input: PdfDocumentInput, fetchArrayBuffer: (url: strin
     const text = await page.getTextContent();
     pages.push(text.items.map((item) => ('str' in item ? item.str : '')).join(' ').replace(/\s+/g, ' ').trim());
   }
-  const content = pages.filter(Boolean).join('\n\n');
-  if (!content) throw new Error('getDocument.pdf returned no text');
-  return { ok: true as const, source: 'pdf' as const, url: input.url, ...contentFields(content) };
+  return pages.filter(Boolean).join('\n\n');
 }
 
 function contentFields(content: string, limit?: number) {
@@ -269,8 +322,8 @@ function remoteFetchFailed(): GetDocumentRecoverableError {
   return {
     ok: false,
     code: 'REMOTE_FETCH_FAILED',
-    message: 'Could not fetch the remote document.',
-    retryHint: 'Check that the URL is reachable, or provide the text with source:"file".',
+    message: 'Could not fetch the URL directly.',
+    retryHint: 'Open it in the browser instead: navigate open, then getDocument source:"currentPage".',
   };
 }
 
@@ -288,7 +341,7 @@ function rejectUnknownInputs(value: Record<string, unknown>, allowedKeys: Set<st
 }
 
 function readSource(value: unknown): GetDocumentInput['source'] {
-  if (value === 'currentPage' || value === 'pdf' || value === 'file') return value;
+  if (value === 'currentPage' || value === 'url' || value === 'file') return value;
   throw new Error(`Invalid getDocument source: ${String(value)}`);
 }
 
