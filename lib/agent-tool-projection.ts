@@ -11,6 +11,7 @@ export type ProjectedToolRun = {
   input: unknown;
   output?: unknown;
   error?: string;
+  durationMs?: number;
   taskId?: string;
   toolCallId?: string;
   title?: string;
@@ -74,6 +75,7 @@ function applyToolEvent(items: ProjectedToolRun[], event: AgentEvent) {
   item.updatedAt = event.createdAt;
   item.output = event.type === 'tool.completed' ? payload.output : undefined;
   item.error = event.type === 'tool.failed' ? hideReasoningText(readString(payload.error) || 'Tool failed.') : undefined;
+  item.durationMs = readFiniteNumber(payload.durationMs) ?? item.durationMs;
   item.evidence = projectToolEvidence(event);
   item.taskId ??= taskId;
   item.toolCallId ??= toolCallId;
@@ -100,4 +102,8 @@ function readRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }

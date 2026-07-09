@@ -3,7 +3,7 @@ import type { Locale, SidepanelMessages } from './sidepanel-i18n.ts';
 import type { ToolTimelineItem } from './sidepanel-view.ts';
 
 type RecoverableOutput = Record<string, unknown> & { ok: false };
-type ToolPresentationItem = Pick<ToolTimelineItem, 'toolName' | 'status' | 'input' | 'output' | 'error'>;
+type ToolPresentationItem = Pick<ToolTimelineItem, 'toolName' | 'status' | 'input' | 'output' | 'error' | 'durationMs'>;
 
 export function toolHeaderSummary(tool: ToolPresentationItem, labels: SidepanelMessages, locale: Locale) {
   if (tool.status === 'failed') return labels.tool.summary.failed(toolErrorSummary(tool, labels));
@@ -23,6 +23,7 @@ export function rawToolDetails(tool: ToolPresentationItem) {
   const details: Record<string, unknown> = { input: tool.input };
   if (tool.output !== undefined) details.output = tool.output;
   if (tool.error) details.error = tool.error;
+  if (tool.durationMs !== undefined) details.durationMs = tool.durationMs;
   return formatRawEvidence(details);
 }
 

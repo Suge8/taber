@@ -296,14 +296,16 @@ function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId?: strin
   return function withRunLog<Input, Output>(toolName: string, run: (input: Input, abortSignal?: AbortSignal) => Promise<Output>) {
     return async (input: Input, options: { abortSignal?: AbortSignal; toolCallId?: string }) => {
       const toolCallId = options.toolCallId;
+      const startedAt = nowMs();
       await emitEvent('tool.started', { taskId, toolCallId, toolName, input });
       try {
         const output = await run(input, options.abortSignal);
-        await appendToolRun({ sessionId, toolName, input, output });
-        await emitEvent('tool.completed', { taskId, toolCallId, toolName, input, output });
+        const durationMs = elapsedMs(startedAt);
+        await appendToolRun({ sessionId, toolName, input, output, durationMs });
+        await emitEvent('tool.completed', { taskId, toolCallId, toolName, input, output, durationMs });
         return output;
       } catch (error) {
-        await emitEvent('tool.failed', { taskId, toolCallId, toolName, input, error: stringifyError(error) });
+        await emitEvent('tool.failed', { taskId, toolCallId, toolName, input, error: stringifyError(error), durationMs: elapsedMs(startedAt) });
         throw error;
       }
     };
@@ -336,6 +338,14 @@ function normalizePageExecutionError(error: unknown) {
 
 function isTargetUnavailableMessage(message: string) {
   return /^Target tab (?:is no longer available|is not operable|\d+ was closed)/.test(message);
+}
+
+function nowMs() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function elapsedMs(startedAt: number) {
+  return Math.max(0, Math.round(nowMs() - startedAt));
 }
 
 function stringifyError(error: unknown) {

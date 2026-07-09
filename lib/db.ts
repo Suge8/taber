@@ -53,6 +53,7 @@ export type ToolRun = {
   toolName: string;
   input: unknown;
   output?: unknown;
+  durationMs?: number;
   createdAt: number;
 };
 
@@ -126,6 +127,7 @@ export async function appendToolRun(record: {
   toolName: string;
   input: unknown;
   output?: unknown;
+  durationMs?: number;
   now?: number;
 }) {
   const createdAt = record.now ?? Date.now();
@@ -136,6 +138,7 @@ export async function appendToolRun(record: {
       toolName: record.toolName,
       input: record.input,
       output: record.output,
+      ...(record.durationMs !== undefined ? { durationMs: record.durationMs } : {}),
       createdAt,
     });
     await touchSession(record.sessionId, createdAt);

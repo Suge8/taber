@@ -8,7 +8,7 @@ import { normalizeAssistantMarkdown } from '../lib/components/ai-elements/respon
 const events = [
   { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'task-1', prompt: 'Summarize this page', context: { id: 12, windowId: 3, title: 'Article', url: 'https://example.com/a', favIconUrl: 'https://example.com/icon.png' } }, createdAt: 1 },
   { id: 2, sessionId: 1, type: 'tool.started', payload: { taskId: 'task-1', toolCallId: 'call-1', toolName: 'getDocument', input: { source: 'currentPage', mode: 'article' } }, createdAt: 2 },
-  { id: 3, sessionId: 1, type: 'tool.completed', payload: { taskId: 'task-1', toolCallId: 'call-1', toolName: 'getDocument', output: { ok: true, source: 'currentPage', mode: 'article', url: 'https://example.com/a', content: '# Page', contentChars: 6, truncated: false } }, createdAt: 3 },
+  { id: 3, sessionId: 1, type: 'tool.completed', payload: { taskId: 'task-1', toolCallId: 'call-1', toolName: 'getDocument', output: { ok: true, source: 'currentPage', mode: 'article', url: 'https://example.com/a', content: '# Page', contentChars: 6, truncated: false }, durationMs: 123 }, createdAt: 3 },
   { id: 4, sessionId: 1, type: 'tool.completed', payload: { taskId: 'task-1', toolCallId: 'call-2', toolName: 'extractImage', output: { ok: true, source: 'viewport', dataUrl: 'data:image/png;base64,abc', mediaType: 'image/png', width: 10, height: 20 } }, createdAt: 4 },
   { id: 5, sessionId: 1, type: 'message.created', payload: { taskId: 'task-1', role: 'assistant', text: '<think>private</think>Summary' }, createdAt: 5 },
 ] as const;
@@ -44,6 +44,8 @@ assert.equal(timeline.length, 2);
 assert.equal(timeline[0].status, 'completed');
 assert.match(timeline[0].inputSummary, /currentPage/);
 assert.match(timeline[0].outputSummary ?? '', /content/);
+assert.equal(timeline[0].durationMs, 123);
+assert.match(rawToolDetails(timeline[0]), /durationMs/);
 
 const failedWithoutAssistantOutput = deriveTimeline([
   { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'fail-fast', prompt: 'go' }, createdAt: 1 },
