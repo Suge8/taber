@@ -2,7 +2,8 @@
   import { onMount } from 'svelte';
   import { browser } from 'wxt/browser';
   import { projectAgentEvents } from '$lib/agent-event-projection.ts';
-  import { initializeDatabase, listSessions, readLatestSessionSnapshot, readSessionSnapshot, type SessionListItem, type SessionSnapshot } from '$lib/db.ts';
+  import { createSession, initializeDatabase, listSessions, readLatestSessionSnapshot, readSessionSnapshot, type SessionListItem, type SessionSnapshot, type WorkspaceFile } from '$lib/db.ts';
+  import { MAX_FILE_BYTES, deleteSessionFile, listSessionFiles, writeSessionFile } from '$lib/workspace-files.ts';
   import { controlledTargetFromContext, imagePreviewFromProjection, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup, sidebarTaskViewFromProjection, sourcesFromProjection, timelineFromProjection, type SettingsTab, type SourceLink } from '$lib/sidepanel-view.ts';
   import { getReasoningEffort, getSelectedModelId, listProvidersWithModels, normalizeReasoningEffortForModel, setReasoningEffort, setSelectedModelId, type ProviderWithModels, type ReasoningEffort } from '$lib/provider-store.ts';
   import { detectLocale, localeManualStorageKey, localeStorageKey, messages, persistLocale, type Locale } from '$lib/sidepanel-i18n.ts';
@@ -11,6 +12,7 @@
   import { readBrowserControlState, type BrowserControlState } from './browser-access.ts';
   import SettingsDialog from './SettingsDialog.svelte';
   import SessionHistory from './SessionHistory.svelte';
+  import FilesStrip from './FilesStrip.svelte';
   import SourcesBar from './SourcesBar.svelte';
   import Timeline from './Timeline.svelte';
   import ToastStack from './ToastStack.svelte';
@@ -41,10 +43,16 @@
   let promptedForMissingModel = $state(false);
   let promptedForBrowserControl = $state(false);
   let toasts = $state<ToastNotice[]>([]);
+  let sessionFiles = $state<WorkspaceFile[]>([]);
   let nextToastId = 1;
 
   const events = $derived(snapshot?.agentEvents ?? []);
   const eventProjection = $derived(projectAgentEvents(events));
+
+  $effect(() => {
+    events.length;
+    void refreshSessionFiles(currentSessionId);
+  });
   const timelineEntries = $derived(timelineFromProjection(eventProjection));
   const taskView = $derived(sidebarTaskViewFromProjection(eventProjection));
   const t = $derived(messages[locale]);
@@ -254,6 +262,43 @@
     }
   }
 
+  async function refreshSessionFiles(sessionId: number | null) {
+    if (!databaseReady || sessionId === null) {
+      sessionFiles = [];
+      return;
+    }
+    try {
+      sessionFiles = await listSessionFiles(sessionId);
+    } catch {
+      sessionFiles = [];
+    }
+  }
+
+  async function handleAttachFile(file: File): Promise<string | undefined> {
+    if (file.size > MAX_FILE_BYTES) {
+      notify({ tone: 'info', icon: 'browser', text: t.quick.attachTooLarge });
+      return undefined;
+    }
+    try {
+      if (currentSessionId === null) {
+        const session = await createSession({ title: file.name.slice(0, 80) });
+        currentSessionId = session.id;
+        await refreshSessions();
+      }
+      const saved = await writeSessionFile({ sessionId: currentSessionId, name: file.name, data: await file.arrayBuffer() });
+      await refreshSessionFiles(currentSessionId);
+      return saved.name;
+    } catch (error) {
+      notifyProblem(error, 'error', 'task');
+      return undefined;
+    }
+  }
+
+  async function handleDeleteFile(file: WorkspaceFile) {
+    await deleteSessionFile(file.id);
+    await refreshSessionFiles(currentSessionId);
+  }
+
   async function handleStop() {
     try {
       const response = await browser.runtime.sendMessage({ type: 'taber.background.stopTask' });
@@ -461,6 +506,8 @@
 
     <SourcesBar {locale} {sources} target={controlledTarget} running={taskStatus === 'running'} {imagePreview} onOpenSource={openSource} onUseCurrentTab={useCurrentTabAsTarget} />
 
+    <FilesStrip {locale} files={sessionFiles} onDelete={handleDeleteFile} />
+
     <section class="shrink-0 px-3 pb-3 pt-2">
       <Composer
         {locale}
@@ -478,6 +525,7 @@
         onMissingModel={() => openSettings('providers')}
         onSubmit={handleStart}
         onStop={handleStop}
+        onAttachFile={handleAttachFile}
         listWindowTabs={listWindowTabs}
         {notify}
       />

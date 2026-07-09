@@ -15,6 +15,8 @@
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
   import { createIntentPrompt, orderQuickActions, type IntentQuickActionMode, type QuickActionMode } from '$lib/sidepanel-view.ts';
+  import { deleteSkill, listSkills, setSkillEnabled } from '$lib/skills.ts';
+  import type { Skill } from '$lib/db.ts';
   import { reasoningEffortOptionsForModel, type ProviderWithModels, type ReasoningEffort } from '$lib/provider-store.ts';
   import type { Notify } from './toast.ts';
   import Brain from 'phosphor-svelte/lib/Brain';
@@ -24,6 +26,7 @@
   import FileText from 'phosphor-svelte/lib/FileText';
   import GlobeSimple from 'phosphor-svelte/lib/GlobeSimple';
   import MagnifyingGlass from 'phosphor-svelte/lib/MagnifyingGlass';
+  import Paperclip from 'phosphor-svelte/lib/Paperclip';
   import PaperPlaneTilt from 'phosphor-svelte/lib/PaperPlaneTilt';
   import Robot from 'phosphor-svelte/lib/Robot';
   import Scales from 'phosphor-svelte/lib/Scales';
@@ -50,6 +53,7 @@
     onMissingModel: () => void;
     onSubmit: (text: string) => void | Promise<void>;
     onStop: () => void | Promise<void>;
+    onAttachFile?: (file: File) => Promise<string | undefined>;
     listWindowTabs: () => Promise<WindowTab[]>;
     notify?: Notify;
   }
@@ -70,6 +74,7 @@
     onMissingModel,
     onSubmit,
     onStop,
+    onAttachFile,
     listWindowTabs,
     notify,
   }: Props = $props();
@@ -88,6 +93,9 @@
   let modelPickerOpen = $state(false);
   let reasoningPickerOpen = $state(false);
   let skillsOpen = $state(false);
+  let skillList = $state<Skill[]>([]);
+  let attachedNames = $state<string[]>([]);
+  let fileInput = $state<HTMLInputElement | undefined>(undefined);
   let tabsLoadToken = 0;
 
   const icons = { summarize: FileText, research: MagnifyingGlass, skills: Sparkle, compare: Scales } as const;
@@ -123,9 +131,20 @@
     }
     if (mode === 'skills') {
       skillsOpen = true;
+      skillList = await listSkills();
       return;
     }
     await openIntent(mode);
+  }
+
+  async function toggleSkill(skill: Skill) {
+    await setSkillEnabled(skill.id, !skill.enabled);
+    skillList = await listSkills();
+  }
+
+  async function removeSkill(skill: Skill) {
+    await deleteSkill(skill.id);
+    skillList = await listSkills();
   }
 
   async function openIntent(mode: IntentQuickActionMode) {
@@ -164,13 +183,26 @@
     cancelIntent();
   }
 
+  async function handleFilesPicked(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    for (const file of input.files ?? []) {
+      const name = await onAttachFile?.(file);
+      if (name && !attachedNames.includes(name)) attachedNames = [...attachedNames, name];
+    }
+    input.value = '';
+  }
+
   async function submitPrompt(text: string) {
     if (missingModel) {
       onMissingModel();
       return false;
     }
-    await onSubmit(text);
+    const prompt = attachedNames.length > 0
+      ? `${text}\n\n[Attached files in /workspace: ${attachedNames.join(', ')}]`
+      : text;
+    await onSubmit(prompt);
     draft = '';
+    attachedNames = [];
     return true;
   }
 
@@ -262,9 +294,42 @@
   <Dialog.Content class="min-h-56 w-[min(92vw,24rem)] gap-0 overflow-hidden rounded-2xl p-0">
     <header class="px-5 pb-3 pt-4">
       <Dialog.Title class="text-[15px] font-semibold tracking-tight text-foreground">{q.skills}</Dialog.Title>
-      <Dialog.Description class="sr-only">{q.skills}</Dialog.Description>
+      <Dialog.Description class="text-muted-foreground pt-1 text-xs">{q.skillsHint}</Dialog.Description>
     </header>
-    <div class="min-h-44"></div>
+    <div class="min-h-44 max-h-[60vh] overflow-y-auto px-3 pb-4">
+      {#if skillList.length === 0}
+        <p class="text-muted-foreground px-2 py-6 text-center text-xs leading-relaxed">{q.skillsEmpty}</p>
+      {:else}
+        <ul class="space-y-1.5">
+          {#each skillList as skill (skill.id)}
+            <li class="ring-line/60 rounded-xl px-3 py-2.5 ring-1 {skill.enabled ? '' : 'opacity-55'}">
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0">
+                  <p class="truncate text-[13px] font-medium text-foreground">
+                    {skill.name}
+                    {#if !skill.enabled}<span class="text-muted-foreground text-[11px] font-normal">· {q.skillDisabled}</span>{/if}
+                  </p>
+                  <p class="text-muted-foreground truncate text-[11.5px]">{skill.hosts.join(', ')}</p>
+                  <p class="text-muted-foreground mt-1 line-clamp-2 text-xs leading-snug">{skill.description}</p>
+                </div>
+                <div class="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    class="hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-lg px-2 py-1 text-[11.5px] transition-colors duration-150"
+                    onclick={() => toggleSkill(skill)}
+                  >{skill.enabled ? q.skillDisable : q.skillEnable}</button>
+                  <button
+                    type="button"
+                    class="hover:bg-surface-2 text-muted-foreground hover:text-destructive rounded-lg px-2 py-1 text-[11.5px] transition-colors duration-150"
+                    onclick={() => removeSkill(skill)}
+                  >{q.skillDelete}</button>
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
   </Dialog.Content>
 </Dialog.Root>
 
@@ -327,8 +392,33 @@
       {/if}
       <PromptInputTextarea placeholder={activeIntent === 'research' ? q.researchPlaceholder : activeIntent === 'compare' ? q.comparePlaceholder : t.placeholder} disabled={disabled || running} bind:value={draft} class={`transition-[min-height,padding] duration-[var(--d-base)] ease-[var(--ease-out)] ${activeIntent ? 'min-h-10 px-3.5 pb-2 pt-2' : 'min-h-12 px-3.5 py-3'}`} />
     </PromptInputBody>
+    {#if attachedNames.length > 0}
+      <div class="flex flex-wrap gap-1 px-3 pb-1" transition:slide={microSlide}>
+        {#each attachedNames as name (name)}
+          <span class="bg-surface-2 text-muted-foreground ring-line/60 flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] ring-1">
+            <Paperclip class="size-3" />{name}
+            <button type="button" class="hover:text-foreground" aria-label={q.cancel} onclick={() => { attachedNames = attachedNames.filter((existing) => existing !== name); }}>
+              <X class="size-3" />
+            </button>
+          </span>
+        {/each}
+      </div>
+    {/if}
     <PromptInputToolbar class="flex-wrap gap-1.5 px-2.5 pb-2.5 pt-0">
       <PromptInputTools class="min-w-0 flex-1 flex-wrap gap-1">
+        {#if onAttachFile}
+          <input bind:this={fileInput} type="file" class="hidden" multiple accept=".pdf,.docx,.md,.txt,.html,.csv,.json" onchange={handleFilesPicked} />
+          <button
+            type="button"
+            class="hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-xl p-1.5 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
+            aria-label={q.attach}
+            title={q.attach}
+            disabled={disabled || running}
+            onclick={() => fileInput?.click()}
+          >
+            <Paperclip class="size-3.5" />
+          </button>
+        {/if}
         {#if !activeIntent}
           <div class="flex min-w-0 flex-wrap gap-1 overflow-hidden" transition:slide={microSlide}>
             <DropdownMenu.Root bind:open={modelPickerOpen}>
