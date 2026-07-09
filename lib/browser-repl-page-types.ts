@@ -1,6 +1,6 @@
 import type { BrowserReplElementRef } from './browser-repl-command.ts';
 
-export type BrowserPageTarget = { ref: string } | { role: string; name: string } | { label: string } | { text: string } | { selector: string };
+export type BrowserPageTarget = { ref: string } | { role: string; name: string } | { label: string } | { text: string } | { selector: string } | { x: number; y: number };
 export type BrowserStateOptions = { scope?: 'viewport' | 'page'; limit?: number };
 
 export type BrowserReplPageLocator = {

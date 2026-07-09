@@ -304,7 +304,9 @@ function targetQuery(target: PageTarget) {
   if ('role' in target) return `${target.role} ${target.name}`;
   if ('label' in target) return target.label;
   if ('text' in target) return target.text;
-  return 'ref' in target ? target.ref : target.selector;
+  if ('ref' in target) return target.ref;
+  if ('x' in target) return `(${target.x}, ${target.y})`;
+  return target.selector;
 }
 
 function frameAccessReason(error: unknown) {

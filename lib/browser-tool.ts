@@ -8,7 +8,8 @@ export type PageTarget =
   | { role: string; name: string }
   | { label: string }
   | { text: string }
-  | { selector: string };
+  | { selector: string }
+  | { x: number; y: number };
 
 export type BrowserInput = {
   action: 'snapshot' | 'click' | 'fill' | 'press';
@@ -31,9 +32,9 @@ export type BrowserResult = {
   state?: unknown;
 };
 
-export const browserDescription = 'Structured page interaction with human-readable locators. Use for clicks, fills, keypresses, and reading page state. Actions: snapshot reads state and ignores target; click, fill, and press operate one target. Locators: prefer { text }, { role, name }, { label }, or { ref } from the latest snapshot; { selector } is fallback. Refs are opaque handles valid only until the next snapshot, page change, or DOM update. Actions auto-wait for DOM stability and return fresh state. Returns ok:false with code/message/candidates for ambiguous, stale, invisible, disabled, or non-fillable targets. Snapshot reports open shadow roots and frames[]; same-origin iframe content includes frames[].elements refs, cross-origin shows FRAME_NOT_ACCESSIBLE with hints.';
+export const browserDescription = 'Structured page interaction with human-readable locators. Use for clicks, fills, keypresses, and reading page state. Actions: snapshot reads state and ignores target; click, fill, and press operate one target. Locators: prefer { text }, { role, name }, { label }, or { ref } from the latest snapshot; { selector } is fallback; { x, y } is the visual fallback for canvas/visual UIs where semantic locators fail — coordinates are viewport CSS px (state.viewport gives width/height; from a screenshot, scale pixel coords by viewport.width/imageWidth). Refs are opaque handles valid only until the next snapshot, page change, or DOM update. Actions auto-wait for DOM stability and return fresh state. Returns ok:false with code/message/candidates for ambiguous, stale, invisible, disabled, or non-fillable targets. Snapshot reports open shadow roots and frames[]; same-origin iframe content includes frames[].elements refs, cross-origin shows FRAME_NOT_ACCESSIBLE with hints.';
 
-const targetDescription = 'Exactly one PageTarget locator: { ref } from the latest browser state, { role, name }, { label }, { text }, or { selector }. Prefer text/role/label/ref; selector is fallback.';
+const targetDescription = 'Exactly one PageTarget locator: { ref } from the latest browser state, { role, name }, { label }, { text }, { selector }, or { x, y } viewport CSS px. Prefer text/role/label/ref; selector is fallback; x/y is the last resort for visual-only targets.';
 
 export const browserInputJsonSchema = {
   type: 'object',
@@ -52,6 +53,8 @@ export const browserInputJsonSchema = {
         label: { type: 'string', description: 'Visible form label, placeholder, aria-label, name/id, or nearby field label.' },
         text: { type: 'string', description: 'Visible human text on a clickable or focusable element.' },
         selector: { type: 'string', description: 'Native CSS selector fallback only; no Playwright pseudo-selectors.' },
+        x: { type: 'number', description: 'Viewport CSS px from the left, paired with y. Visual fallback for canvas or visually obvious targets with no semantic locator.' },
+        y: { type: 'number', description: 'Viewport CSS px from the top, paired with x.' },
       },
     },
     value: { type: 'string', description: 'Text value for action:"fill".' },
@@ -92,13 +95,20 @@ function readAction(value: unknown): BrowserInput['action'] {
 function readPageTarget(value: unknown, name: string): PageTarget {
   if (!isRecord(value)) throw new Error(`${name} must be a PageTarget object`);
   const hasRole = 'role' in value || 'name' in value;
-  const locatorCount = ['ref', 'label', 'text', 'selector'].filter((key) => key in value).length + (hasRole ? 1 : 0);
-  if (locatorCount !== 1) throw new Error(`${name} must contain exactly one locator: ref, role/name, label, text, or selector`);
+  const hasPoint = 'x' in value || 'y' in value;
+  const locatorCount = ['ref', 'label', 'text', 'selector'].filter((key) => key in value).length + (hasRole ? 1 : 0) + (hasPoint ? 1 : 0);
+  if (locatorCount !== 1) throw new Error(`${name} must contain exactly one locator: ref, role/name, label, text, selector, or x/y`);
   if ('ref' in value) return { ref: readNonEmptyString(value.ref, 'target.ref') };
+  if (hasPoint) return { x: readFiniteNumber(value.x, 'target.x'), y: readFiniteNumber(value.y, 'target.y') };
   if (hasRole) return { role: readNonEmptyString(value.role, 'target.role'), name: readNonEmptyString(value.name, 'target.name') };
   if ('label' in value) return { label: readNonEmptyString(value.label, 'target.label') };
   if ('text' in value) return { text: readNonEmptyString(value.text, 'target.text') };
   return { selector: readNonEmptyString(value.selector, 'target.selector') };
+}
+
+function readFiniteNumber(value: unknown, name: string) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
+  return value;
 }
 
 function readTimeout(value: unknown) {

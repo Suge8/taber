@@ -140,18 +140,40 @@ export function installBrowserReplPageLocator() {
   function pageMutationTouchesVisual(record: MutationRecord) { const nodes = [record.target, ...Array.from(record.addedNodes ?? []), ...Array.from(record.removedNodes ?? [])]; return nodes.some((node) => node instanceof Element && pageIsVisualElement(node)); }
   function pageTargetCandidate(candidate: { element: HTMLElement; score: number }, number: number) { return { ...pageBrowserSummaryElement(candidate.element, number), confidence: pageRound(candidate.score) }; }
   function pageResolvePageTarget(target: unknown, intent: 'click' | 'fill' | 'press') {
-    try { const locator = pageReadPageTarget(target); if ('ref' in locator) return pageResolvedTarget(pageResolveSnapshotRef(locator.ref)); if ('selector' in locator) return pageResolvedTarget(pageResolveTarget(locator.selector, 'browser')); if ('label' in locator) return pageResolveLabelTarget(locator.label); if ('role' in locator) return pageResolveScoredTarget(`${locator.role} ${locator.name}`, pageTargetCandidates(intent).filter((candidate) => pageNormalizeText(pageElementRole(candidate.element) || '') === pageNormalizeText(locator.role)).map((candidate) => ({ ...candidate, score: pageTextScore(locator.name, pageAccessibleName(candidate.element)) }))); return pageResolveScoredTarget(locator.text, pageTargetCandidates(intent).map((candidate) => ({ ...candidate, score: pageBestElementTextScore(locator.text, candidate.element) }))); }
+    try { const locator = pageReadPageTarget(target); if ('ref' in locator) return pageResolvedTarget(pageResolveSnapshotRef(locator.ref)); if ('x' in locator) return pageResolvePointTarget(locator.x, locator.y); if ('selector' in locator) return pageResolvedTarget(pageResolveTarget(locator.selector, 'browser')); if ('label' in locator) return pageResolveLabelTarget(locator.label); if ('role' in locator) return pageResolveScoredTarget(`${locator.role} ${locator.name}`, pageTargetCandidates(intent).filter((candidate) => pageNormalizeText(pageElementRole(candidate.element) || '') === pageNormalizeText(locator.role)).map((candidate) => ({ ...candidate, score: pageTextScore(locator.name, pageAccessibleName(candidate.element)) }))); return pageResolveScoredTarget(locator.text, pageTargetCandidates(intent).map((candidate) => ({ ...candidate, score: pageBestElementTextScore(locator.text, candidate.element) }))); }
     catch (error) { const message = error instanceof Error ? error.message : String(error); return pageTargetFailure(/stale|latest browser snapshot|page changed/i.test(message) ? 'STALE_REF' : /Snapshot element changed/i.test(message) ? 'ELEMENT_CHANGED' : /No element|gone|changed/i.test(message) ? 'NO_TARGET' : 'INVALID_TARGET', message); }
   }
   function pageReadPageTarget(value: unknown): BrowserPageTarget {
     if (!pageIsRecord(value)) throw new Error('PageTarget must be an object');
-    const hasRole = 'role' in value || 'name' in value, locatorCount = ['ref', 'label', 'text', 'selector'].filter((key) => key in value).length + (hasRole ? 1 : 0);
-    if (locatorCount !== 1) throw new Error('PageTarget must contain exactly one locator: ref, role/name, label, text, or selector');
+    const hasRole = 'role' in value || 'name' in value, hasPoint = 'x' in value || 'y' in value;
+    const locatorCount = ['ref', 'label', 'text', 'selector'].filter((key) => key in value).length + (hasRole ? 1 : 0) + (hasPoint ? 1 : 0);
+    if (locatorCount !== 1) throw new Error('PageTarget must contain exactly one locator: ref, role/name, label, text, selector, or x/y');
     if ('ref' in value) return { ref: pageRequiredText(value.ref, 'PageTarget.ref') };
+    if (hasPoint) return { x: pageRequiredCoordinate(value.x, 'PageTarget.x'), y: pageRequiredCoordinate(value.y, 'PageTarget.y') };
     if ('selector' in value) return { selector: pageRequiredText(value.selector, 'PageTarget.selector') };
     if ('label' in value) return { label: pageRequiredText(value.label, 'PageTarget.label') };
     if ('text' in value) return { text: pageRequiredText(value.text, 'PageTarget.text') };
     return { role: pageRequiredText(value.role, 'PageTarget.role'), name: pageRequiredText(value.name, 'PageTarget.name') };
+  }
+  function pageRequiredCoordinate(value: unknown, name: string) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
+    return value;
+  }
+  function pageResolvePointTarget(x: number, y: number) {
+    if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) {
+      return pageTargetFailure('NO_TARGET', `Point (${x}, ${y}) is outside the viewport (${innerWidth}x${innerHeight} CSS px). Coordinates are viewport CSS px; scroll first if the target is off-screen.`);
+    }
+    let element: Element | null = document.elementFromPoint(x, y);
+    while (element?.shadowRoot) {
+      const inner = element.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === element) break;
+      element = inner;
+    }
+    if (element instanceof HTMLIFrameElement) {
+      return pageTargetFailure('FRAME_NOT_ACCESSIBLE', `Point (${x}, ${y}) lands on an iframe; coordinate targets only reach the top document. Use frames[] refs or selectors instead.`);
+    }
+    if (!(element instanceof HTMLElement)) return pageTargetFailure('NO_TARGET', `No interactive element at point (${x}, ${y}).`);
+    return pageResolvedTarget(element);
   }
   function pageResolveLabelTarget(label: string) {
     const match = pageBestFieldMatch(label, pageFieldCandidates(), new Set(), 0.72);
