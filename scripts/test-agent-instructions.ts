@@ -4,13 +4,17 @@ import { AGENT_INSTRUCTIONS_VERSION, instructionsByLocale } from '../lib/agent-i
 import { deriveModelMessages } from '../lib/model-context.ts';
 import type { AgentEvent } from '../lib/db.ts';
 
-assert.equal(AGENT_INSTRUCTIONS_VERSION, 2);
+assert.equal(AGENT_INSTRUCTIONS_VERSION, 3);
 assert.match(instructionsByLocale.zh, /## 权限层级/);
 assert.match(instructionsByLocale.zh, /## 自主执行/);
 assert.match(instructionsByLocale.zh, /## 安全边界/);
+assert.match(instructionsByLocale.zh, /不要连续空 snapshot/);
+assert.match(instructionsByLocale.zh, /Settings\/Subscription/);
 assert.match(instructionsByLocale.en, /## Authority Hierarchy/);
 assert.match(instructionsByLocale.en, /## Autonomous Execution/);
 assert.match(instructionsByLocale.en, /## Safety Boundaries/);
+assert.match(instructionsByLocale.en, /Do not repeat empty snapshots/);
+assert.match(instructionsByLocale.en, /Settings\/Subscription/);
 
 const instructions = `${instructionsByLocale.zh}\n\n${instructionsByLocale.en}`;
 const toolPrompt = JSON.parse(createAgentToolPromptEstimateText({ browserJsEnabled: true })) as Record<string, { description: string }>;
@@ -53,6 +57,7 @@ const evalFixtures: Array<{ name: string; assert(): void }> = [
     assert() {
       assert.match(instructions, /ambiguous\/stale → 从最新状态选择或换方法|For ambiguous\/stale: choose from fresh state or change method/);
       assert.match(toolPrompt.browser.description, /Refs are opaque handles valid only until the next snapshot/);
+      assert.match(toolPrompt.browser.description, /snapshot reads state and ignores target/);
     },
   },
   {

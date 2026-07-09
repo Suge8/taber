@@ -61,6 +61,7 @@ function browserReplDescription(browserJsEnabled: boolean) {
     `Helpers: ${helpers}.${browserJsNote} ` +
     'Page reading: readVisibleText(), readLinksAndButtons(), listInteractiveElements(), queryText("text") cover main document, open shadow roots, and same-origin iframes; cross-origin frames show metadata. ' +
     'Element indexes from observe/query are scoped to one call; never reuse across calls. ' +
+    'For page changes, use action auto-wait or waitFor; do not use sleep/setTimeout polling. ' +
     'navigate(input) delegates to navigate; switchTab or open target:"new" updates task target for subsequent helpers in the same call. ' +
     'batch(actions) runs fill/click/press/scroll/waitFor with per-step evidence. ' +
     'fillForm({ fields, confidence?, dryRun? }) matches by label/placeholder/aria-label/name/id; fills high-confidence unique fields only; ambiguous fields are reported. ' +

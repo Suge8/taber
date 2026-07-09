@@ -31,7 +31,7 @@ export type BrowserResult = {
   state?: unknown;
 };
 
-export const browserDescription = 'Structured page interaction with human-readable locators. Use for clicks, fills, keypresses, and reading page state. Actions: snapshot reads state; click, fill, and press operate one target. Locators: prefer { text }, { role, name }, { label }, or { ref } from the latest snapshot; { selector } is fallback. Refs are opaque handles valid only until the next snapshot, page change, or DOM update. Actions auto-wait for DOM stability and return fresh state. Returns ok:false with code/message/candidates for ambiguous, stale, invisible, disabled, or non-fillable targets. Snapshot reports open shadow roots and frames[]; same-origin iframe content includes frames[].elements refs, cross-origin shows FRAME_NOT_ACCESSIBLE with hints.';
+export const browserDescription = 'Structured page interaction with human-readable locators. Use for clicks, fills, keypresses, and reading page state. Actions: snapshot reads state and ignores target; click, fill, and press operate one target. Locators: prefer { text }, { role, name }, { label }, or { ref } from the latest snapshot; { selector } is fallback. Refs are opaque handles valid only until the next snapshot, page change, or DOM update. Actions auto-wait for DOM stability and return fresh state. Returns ok:false with code/message/candidates for ambiguous, stale, invisible, disabled, or non-fillable targets. Snapshot reports open shadow roots and frames[]; same-origin iframe content includes frames[].elements refs, cross-origin shows FRAME_NOT_ACCESSIBLE with hints.';
 
 const targetDescription = 'Exactly one PageTarget locator: { ref } from the latest browser state, { role, name }, { label }, { text }, or { selector }. Prefer text/role/label/ref; selector is fallback.';
 
@@ -71,10 +71,7 @@ export function parseBrowserInput(value: unknown): BrowserInput {
   if ('scope' in value) input.scope = readScope(value.scope);
   if ('limit' in value) input.limit = readLimit(value.limit);
 
-  if (action === 'snapshot') {
-    if ('target' in value) throw new Error('browser.snapshot does not accept target');
-    return input;
-  }
+  if (action === 'snapshot') return input;
   if (action === 'click') input.target = readPageTarget(value.target, 'target');
   if (action === 'fill') {
     input.target = readPageTarget(value.target, 'target');
