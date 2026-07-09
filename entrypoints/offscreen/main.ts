@@ -13,6 +13,8 @@ import {
   initializeDatabase,
   readSessionSnapshot,
   type AgentEvent,
+  type Model,
+  type Provider,
 } from '../../lib/db';
 import { compactContext, contextLimit, needsCompaction } from '../../lib/context-compaction';
 import { codexProviderOptions, createCodexLanguageModel } from '../../lib/codex-runtime';
@@ -23,6 +25,8 @@ import { readFreshXaiTokens } from '../../lib/xai-provider';
 import { createXaiLanguageModel, xaiProviderOptions } from '../../lib/xai-runtime';
 import { readSelectedConfiguredModel } from '../../lib/provider-config-flow';
 import { getProviderApiKey, getReasoningEffort, reasoningProviderOptionsForModel } from '../../lib/provider-store';
+import { skillsDigestForUrl } from '../../lib/skills';
+import { seedBuiltinSkills } from '../../lib/skills-seeds';
 import { AGENT_INSTRUCTIONS_VERSION, instructionsByLocale, readAgentLocale, type AgentLocale } from '../../lib/agent-instructions';
 
 type TargetTabContext = { id: number; windowId?: number; title?: string; url?: string; favIconUrl?: string };
@@ -41,7 +45,8 @@ let runningTask:
 let idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
 
 void initializeDatabase()
-  .then(() => {
+  .then(async () => {
+    await seedBuiltinSkills().catch((error) => console.warn('Taber builtin skills seeding failed', error));
     browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!isRecord(message)) return false;
       if (message.type === 'taber.agent.startTask') {
@@ -92,7 +97,7 @@ async function startTask(message: Record<string, unknown>) {
   showTargetOverlay(targetTab.id);
   void notifyBackground('taber.background.agentActive');
   await emitAgentEvent(sessionId, 'task.started', { taskId, prompt, context: targetTab, instructionsVersion: AGENT_INSTRUCTIONS_VERSION });
-  void runAgentTask({ abortController, prompt, sessionId, taskId, targetTabId: targetTab.id, windowId, locale });
+  void runAgentTask({ abortController, prompt, sessionId, taskId, targetTabId: targetTab.id, targetTabUrl: targetTab.url, windowId, locale });
 
   return { sessionId, taskId };
 }
@@ -139,12 +144,16 @@ async function runAgentTask(task: {
   sessionId: number;
   taskId: string;
   targetTabId: number;
+  targetTabUrl?: string;
   windowId?: number;
   locale: AgentLocale;
 }) {
   try {
-    const instructions = instructionsByLocale[task.locale];
-    const runtime = await createConfiguredRuntime(task.sessionId, task.taskId, task.windowId, task.targetTabId, instructions);
+    const skillsDigest = await skillsDigestForUrl(task.targetTabUrl);
+    const instructions = skillsDigest ? `${instructionsByLocale[task.locale]}
+
+${skillsDigest}` : instructionsByLocale[task.locale];
+    const runtime = await createConfiguredRuntime(task, instructions);
     let events = (await readSessionSnapshot(task.sessionId)).agentEvents;
     const budget = { contextWindowTokens: runtime.modelRecord.contextWindowTokens, instructions, toolPromptText: runtime.toolPromptText };
     const compacted = await compactContext({
@@ -205,54 +214,18 @@ function clearIdleCloseTimer() {
   idleCloseTimer = undefined;
 }
 
-async function createConfiguredRuntime(sessionId: number, taskId: string, windowId: number | undefined, targetTabId: number, instructions: string) {
+async function createConfiguredRuntime(
+  task: { sessionId: number; taskId: string; windowId?: number; targetTabId: number; targetTabUrl?: string },
+  instructions: string,
+) {
+  const { sessionId, taskId, windowId, targetTabId, targetTabUrl } = task;
   const modelRecord = await readSelectedModel();
   const providerRecord = await database.providers.get(modelRecord.providerId);
   if (!providerRecord) throw new Error(`Model provider not found: ${modelRecord.providerId}`);
 
   const reasoningEffort = await getReasoningEffort();
-  const needsApiKey = providerRecord.kind !== 'openaiCodex' && providerRecord.kind !== 'xaiSub';
-  const apiKey = needsApiKey ? await getProviderApiKey(providerRecord.id) : '';
-  const model = providerRecord.kind === 'openaiCodex'
-    ? createCodexLanguageModel({
-        modelId: modelRecord.name,
-        providerName: providerRecord.name,
-        baseURL: providerRecord.baseURL,
-        reasoningEffort,
-        supportedReasoningEfforts: modelRecord.supportedReasoningEfforts,
-        auth: () => readFreshCodexTokens(providerRecord.id),
-      })
-    : providerRecord.kind === 'xaiSub'
-      ? createXaiLanguageModel({
-          modelId: modelRecord.name,
-          providerName: providerRecord.name,
-          baseURL: providerRecord.baseURL,
-          reasoningEffort,
-          supportedReasoningEfforts: modelRecord.supportedReasoningEfforts,
-          auth: async () => {
-            const tokens = await readFreshXaiTokens(providerRecord.id);
-            return { accessToken: tokens.accessToken };
-          },
-        })
-      : providerRecord.kind === 'openaiApiKey'
-        ? createOpenAIApiLanguageModel({
-            modelId: modelRecord.name,
-            providerName: providerRecord.name,
-            baseURL: providerRecord.baseURL,
-            apiKey,
-          })
-        : createOpenAICompatible({
-            name: providerRecord.name,
-            baseURL: providerRecord.baseURL,
-            apiKey,
-          })(modelRecord.name);
-  const providerOptions = providerRecord.kind === 'openaiCodex'
-    ? codexProviderOptions(reasoningEffort)
-    : providerRecord.kind === 'xaiSub'
-      ? xaiProviderOptions(reasoningEffort)
-      : providerRecord.kind === 'openaiApiKey'
-        ? openAIProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name)
-        : reasoningProviderOptionsForModel(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);
+  const model = await createLanguageModel(providerRecord, modelRecord, reasoningEffort);
+  const providerOptions = languageModelProviderOptions(providerRecord.kind, modelRecord, reasoningEffort);
   const browserJsEnabled = await readBrowserJsEnabled();
   const toolPromptText = createAgentToolPromptEstimateText({ browserJsEnabled });
   return {
@@ -269,6 +242,7 @@ async function createConfiguredRuntime(sessionId: number, taskId: string, window
         taskId,
         windowId,
         targetTabId,
+        targetTabUrl,
         getTargetTabId: () => runningTask?.taskId === taskId ? runningTask.targetTabId : targetTabId,
         sendMessage: (message) => browser.runtime.sendMessage(message),
         emitEvent: (type, payload) => emitAgentEvent(sessionId, type, payload),
@@ -278,6 +252,33 @@ async function createConfiguredRuntime(sessionId: number, taskId: string, window
       }),
     }),
   };
+}
+
+type ReasoningEffortSetting = Awaited<ReturnType<typeof getReasoningEffort>>;
+
+async function createLanguageModel(providerRecord: Provider, modelRecord: Model, reasoningEffort: ReasoningEffortSetting) {
+  const shared = { modelId: modelRecord.name, providerName: providerRecord.name, baseURL: providerRecord.baseURL };
+  if (providerRecord.kind === 'openaiCodex') {
+    return createCodexLanguageModel({ ...shared, reasoningEffort, supportedReasoningEfforts: modelRecord.supportedReasoningEfforts, auth: () => readFreshCodexTokens(providerRecord.id) });
+  }
+  if (providerRecord.kind === 'xaiSub') {
+    return createXaiLanguageModel({
+      ...shared,
+      reasoningEffort,
+      supportedReasoningEfforts: modelRecord.supportedReasoningEfforts,
+      auth: async () => ({ accessToken: (await readFreshXaiTokens(providerRecord.id)).accessToken }),
+    });
+  }
+  const apiKey = await getProviderApiKey(providerRecord.id);
+  if (providerRecord.kind === 'openaiApiKey') return createOpenAIApiLanguageModel({ ...shared, apiKey });
+  return createOpenAICompatible({ name: providerRecord.name, baseURL: providerRecord.baseURL, apiKey })(modelRecord.name);
+}
+
+function languageModelProviderOptions(kind: Provider['kind'], modelRecord: Model, reasoningEffort: ReasoningEffortSetting) {
+  if (kind === 'openaiCodex') return codexProviderOptions(reasoningEffort);
+  if (kind === 'xaiSub') return xaiProviderOptions(reasoningEffort);
+  if (kind === 'openaiApiKey') return openAIProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);
+  return reasoningProviderOptionsForModel(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);
 }
 
 async function readBrowserJsEnabled() {
