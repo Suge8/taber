@@ -10,9 +10,13 @@ import { debuggerInputJsonSchema, debuggerRequestType, parseDebuggerInput, type 
 import { createExtractImageController, extractImageInputJsonSchema, parseExtractImageInput, type ExtractImageInput, type ExtractImageResult } from './extract-image.ts';
 import { createGetDocumentController, getDocumentInputJsonSchema, parseGetDocumentInput, type GetDocumentInput, type GetDocumentResult, type PageDocument } from './get-document.ts';
 import { navigateInputJsonSchema, navigateRequestType, parseNavigateInput, type NavigateInput, type NavigateResult } from './navigate.ts';
+import { availableSkillPathsForUrl } from './skills.ts';
+import { createFsController, fsInputJsonSchema, parseFsInput, type FsInput, type FsResult } from './fs-tool.ts';
+import { readSessionFile, writeSessionFile } from './workspace-files.ts';
 import { DEBUGGER_ENABLED } from './runtime-flags.ts';
 
 type SendMessage = (message: unknown) => Promise<unknown>;
+type NavigateToolResult = NavigateResult & { availableSkills?: string[] };
 type EmitEvent = (type: string, payload: unknown) => Promise<void>;
 type RunSandbox = typeof runBrowserReplInSandbox;
 type TargetChangeReason = 'openNew' | 'switchTab';
@@ -23,6 +27,7 @@ type AgentToolOptions = {
   taskId?: string;
   windowId?: number;
   targetTabId?: number;
+  targetTabUrl?: string;
   getTargetTabId?: () => number | undefined;
   sendMessage: SendMessage;
   emitEvent: EmitEvent;
@@ -32,16 +37,18 @@ type AgentToolOptions = {
   browserJsEnabled?: boolean;
 };
 
-const getDocumentDescription = 'Read webpage, PDF, or file as structured content. Use when you need article text, page content, selection, or tables. For currentPage: mode:"article" extracts main content, mode:"page" gets full text, mode:"selection" reads user selection. Results include open shadow root text and same-origin iframe content; cross-origin iframes show metadata with access hints.';
-const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport requires visible target tab; to capture another tab, call navigate.switchTab first.';
+const getDocumentDescription = 'Read webpage, PDF, or workspace file as structured content. Long content is saved to /workspace and the result carries a preview plus savedTo; read the file for the rest. Use when you need article text, page content, selection, or tables. Fetch-first: for public/static URLs prefer source:"url" (fetches the page or PDF directly, no tab, fast, parallelizable); use source:"currentPage" when content needs login, JS rendering, or the controlled tab. For currentPage: mode:"article" extracts main content, mode:"page" gets full text, mode:"selection" reads user selection. source:"file" reads an uploaded or generated /workspace file (pdf, docx, or text) as text. Results include open shadow root text and same-origin iframe content; cross-origin iframes show metadata with access hints.';
+const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport results include width/height: the viewport size in CSS px, the coordinate space for browser { x, y } targets (scale screenshot pixel coords by width/imageWidth). Viewport requires visible target tab; to capture another tab, call navigate.switchTab first.';
 const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Use for all navigation. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly.';
 const debuggerDescription = 'Debug-build only: read console, network, failed requests, accessibility snapshots, main-world JS state, or raw CDP. Use for diagnosing console errors, network failures, and accessibility issues. Cookies are blocked.';
+const fsDescription = 'Session file workspace and site skills. ls lists /workspace (uploads and outputs) and /skills (stored site knowledge). read returns file text. write saves text files (.md/.txt/.html/.csv/.json) or converts Markdown to Word (.docx); for PDF output write .md or .html and tell the user to export it from the sidebar. /skills/*.md files are reusable prior knowledge about sites: read matching skills before blind exploration; they are priors, live page state wins. After a task where you discovered a non-obvious reusable site flow or pitfall, write a concise skill file. Never store secrets or personal data.';
 
 export function createAgentToolPromptEstimateText(options: { browserJsEnabled?: boolean } = {}) {
   return JSON.stringify({
     getDocument: { description: getDocumentDescription, inputSchema: getDocumentInputJsonSchema },
     extractImage: { description: extractImageDescription, inputSchema: extractImageInputJsonSchema },
     navigate: { description: navigateDescription, inputSchema: navigateInputJsonSchema },
+    fs: { description: fsDescription, inputSchema: fsInputJsonSchema },
     browser: { description: browserDescription, inputSchema: browserInputJsonSchema },
     browserRepl: { description: browserReplDescription(options.browserJsEnabled !== false), inputSchema: createBrowserReplInputJsonSchema({ browserJsEnabled: options.browserJsEnabled !== false }) },
     ...(DEBUGGER_ENABLED ? { debugger: { description: debuggerDescription, inputSchema: debuggerInputJsonSchema } } : {}),
@@ -73,16 +80,21 @@ function browserReplDescription(browserJsEnabled: boolean) {
 export function createAgentTools(options: AgentToolOptions) {
   const browserJsEnabled = options.browserJsEnabled !== false;
   const runtime = new AgentToolRuntime({
+    sessionId: options.sessionId,
     sendMessage: options.sendMessage,
     windowId: options.windowId,
     targetTabId: options.targetTabId,
+    targetTabUrl: options.targetTabUrl,
     getTargetTabId: options.getTargetTabId,
     onTargetChanged: options.onTargetChanged,
     onTargetUnavailable: options.onTargetUnavailable,
     runSandbox: options.runSandbox ?? runBrowserReplInSandbox,
     browserJsEnabled,
   });
-  const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId);
+  // Skill freshness loop: after repeated tool failures, point the model back at skills it read this task.
+  const staleSkillTracker: StaleSkillTracker = { readSkillPaths: [], consecutiveFailures: 0, hinted: false };
+  const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId, staleSkillTracker);
+  const fsController = createFsController({ sessionId: options.sessionId });
   const tools = {
     getDocument: tool<GetDocumentInput, GetDocumentResult>({
       description: getDocumentDescription,
@@ -95,7 +107,7 @@ export function createAgentTools(options: AgentToolOptions) {
       execute: withRunLog('extractImage', (input, abortSignal) => runtime.extractImage(input, abortSignal)),
       toModelOutput: extractImageToModelOutput,
     }),
-    navigate: tool<NavigateInput, NavigateResult>({
+    navigate: tool<NavigateInput, NavigateToolResult>({
       description: navigateDescription,
       inputSchema: jsonSchema<NavigateInput>(navigateInputJsonSchema, validator(parseNavigateInput)),
       execute: withRunLog('navigate', (input, abortSignal) => runtime.navigate(input, abortSignal)),
@@ -109,6 +121,17 @@ export function createAgentTools(options: AgentToolOptions) {
       description: browserReplDescription(browserJsEnabled),
       inputSchema: jsonSchema<BrowserReplInput>(createBrowserReplInputJsonSchema({ browserJsEnabled }), validator(parseBrowserReplInput)),
       execute: withRunLog('browserRepl', (input, abortSignal) => runtime.browserRepl(input, abortSignal)),
+    }),
+    fs: tool<FsInput, FsResult>({
+      description: fsDescription,
+      inputSchema: jsonSchema<FsInput>(fsInputJsonSchema, validator(parseFsInput)),
+      execute: withRunLog('fs', async (input) => {
+        const result = await fsController.run(input);
+        if (input.action === 'read' && input.path?.startsWith('/skills/') && !staleSkillTracker.readSkillPaths.includes(input.path)) {
+          staleSkillTracker.readSkillPaths.push(input.path);
+        }
+        return result;
+      }),
     }),
   };
 
@@ -124,6 +147,7 @@ export function createAgentTools(options: AgentToolOptions) {
 }
 
 class AgentToolRuntime {
+  private readonly sessionId: number;
   private readonly sendMessage: SendMessage;
   private readonly windowId?: number;
   private readonly runSandbox: RunSandbox;
@@ -133,20 +157,25 @@ class AgentToolRuntime {
   private readonly onTargetChanged?: (change: TargetChanged) => Promise<void>;
   private readonly onTargetUnavailable?: (error: string) => Promise<void>;
   private targetTabId?: number;
+  private lastPageHost?: string;
 
   constructor(options: {
+    sessionId: number;
     sendMessage: SendMessage;
     windowId?: number;
     targetTabId?: number;
+    targetTabUrl?: string;
     getTargetTabId?: () => number | undefined;
     onTargetChanged?: (change: TargetChanged) => Promise<void>;
     onTargetUnavailable?: (error: string) => Promise<void>;
     runSandbox: RunSandbox;
     browserJsEnabled: boolean;
   }) {
+    this.sessionId = options.sessionId;
     this.sendMessage = options.sendMessage;
     this.windowId = options.windowId;
     this.targetTabId = options.targetTabId;
+    this.lastPageHost = readHost(options.targetTabUrl);
     this.getTargetTabId = options.getTargetTabId;
     this.onTargetChanged = options.onTargetChanged;
     this.onTargetUnavailable = options.onTargetUnavailable;
@@ -159,13 +188,21 @@ class AgentToolRuntime {
     });
   }
 
-  getDocument(input: GetDocumentInput, abortSignal?: AbortSignal) {
+  async getDocument(input: GetDocumentInput, abortSignal?: AbortSignal) {
     if (input.source === 'currentPage' && input.tabId !== undefined) this.assertInputTabId('getDocument', input.tabId);
-    return createGetDocumentController({
+    const result = await createGetDocumentController({
       getCurrentTabId: () => this.getCurrentTabId(),
       executeInTab: (tabId, nextInput) => this.extractPageDocument(tabId, nextInput, abortSignal),
-      fetchArrayBuffer: (url) => abortable(() => fetch(url).then(requireOk).then((response) => response.arrayBuffer()), abortSignal),
+      fetchDocument: (url) => abortable(async () => {
+        const response = await fetch(url, { redirect: 'follow' }).then(requireOk);
+        return { contentType: response.headers.get('content-type') ?? '', data: await response.arrayBuffer(), finalUrl: response.url || undefined };
+      }, abortSignal),
+      readFile: async (name) => {
+        const file = await readSessionFile(this.sessionId, name);
+        return file ? { mimeType: file.mimeType, data: file.data } : undefined;
+      },
     }).run(input);
+    return spillLargeDocumentContent(result, (name, data) => writeSessionFile({ sessionId: this.sessionId, name, data }).then(() => undefined));
   }
 
   extractImage(input: ExtractImageInput, abortSignal?: AbortSignal) {
@@ -183,24 +220,60 @@ class AgentToolRuntime {
     if (isRecord(response) && typeof response.error === 'string') throw await this.navigateError(input, response.error);
     const result = response as NavigateResult;
     await this.applyNavigateTargetChange(input, result);
-    return result;
+    return this.withAvailableSkills(input, result);
+  }
+
+  private async withAvailableSkills(_input: NavigateInput, result: NavigateResult): Promise<NavigateToolResult> {
+    const paths = await this.skillsForHostChange(result.tab?.url ?? result.navigation?.url);
+    return paths ? { ...result, availableSkills: paths } : result;
+  }
+
+  /** Single source for host-change skill announcements: returns matching /skills paths only when the host changed. */
+  private async skillsForHostChange(url: string | undefined): Promise<string[] | undefined> {
+    const host = readHost(url);
+    if (!host || host === this.lastPageHost) return undefined;
+    this.lastPageHost = host;
+    const paths = await availableSkillPathsForUrl(url);
+    return paths.length > 0 ? paths : undefined;
+  }
+
+  private async readTargetTabUrl(abortSignal?: AbortSignal): Promise<string | undefined> {
+    if (abortSignal?.aborted) return undefined;
+    try {
+      const response = await this.sendMessage({ type: navigateRequestType, input: { action: 'currentTab' }, windowId: this.windowId, targetTabId: this.currentTargetTabId() });
+      return isRecord(response) && isRecord(response.tab) && typeof response.tab.url === 'string' ? response.tab.url : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async browser(input: BrowserInput, abortSignal?: AbortSignal) {
     if (input.tabId !== undefined) this.assertInputTabId('browser', input.tabId);
     const tabId = input.tabId ?? (await this.getCurrentTabId());
-    return this.pageExecutor.executePageCommand(tabId, { helper: 'browser', args: [input], cancelKey: crypto.randomUUID(), timeoutMs: input.timeoutMs ?? DEFAULT_BROWSER_TOOL_TIMEOUT_MS }, abortSignal) as Promise<BrowserResult>;
+    const result = await this.pageExecutor.executePageCommand(tabId, { helper: 'browser', args: [input], cancelKey: crypto.randomUUID(), timeoutMs: input.timeoutMs ?? DEFAULT_BROWSER_TOOL_TIMEOUT_MS }, abortSignal) as BrowserResult;
+    return this.withPageHostSkills(result);
   }
 
-  browserRepl(input: BrowserReplInput, abortSignal?: AbortSignal) {
+  /** When an in-page action lands on a new host (e.g. a link click navigated), surface matching site skills. */
+  private async withPageHostSkills(result: BrowserResult): Promise<BrowserResult & { availableSkills?: string[] }> {
+    const state = isRecord(result.state) ? result.state : undefined;
+    const paths = await this.skillsForHostChange(typeof state?.url === 'string' ? state.url : undefined);
+    return paths ? { ...result, availableSkills: paths } : result;
+  }
+
+  async browserRepl(input: BrowserReplInput, abortSignal?: AbortSignal) {
     if (input.tabId !== undefined) this.assertInputTabId('browserRepl', input.tabId);
-    return createBrowserReplController({
+    const result = await createBrowserReplController({
       getCurrentTabId: () => this.getCurrentTabId(),
       executePageCommand: (tabId, command, nextSignal) => this.pageExecutor.executePageCommand(tabId, command, nextSignal),
       runSandbox: this.runSandbox,
       navigate: (nextInput, nextSignal) => this.navigate(parseNavigateInput(nextInput), nextSignal),
       browserJsEnabled: this.browserJsEnabled,
     }).run(input, abortSignal);
+    const spilled = await spillLargeReplValue(result, (name, data) => writeSessionFile({ sessionId: this.sessionId, name, data }).then(() => undefined));
+    // REPL page actions can navigate across hosts; check the target tab afterwards.
+    const paths = await this.skillsForHostChange(await this.readTargetTabUrl(abortSignal));
+    return paths ? { ...spilled, availableSkills: paths } : spilled;
   }
 
   async debugger(input: DebuggerInput, abortSignal?: AbortSignal) {
@@ -229,7 +302,8 @@ class AgentToolRuntime {
   private async captureVisibleTab(input: ExtractImageInput, abortSignal?: AbortSignal) {
     const response = await abortable(() => this.sendMessage({ type: 'taber.extractImage.captureVisibleTab', input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
     if (isRecord(response) && typeof response.error === 'string') throw await this.errorFromResponse(response.error);
-    return String(response);
+    if (!isRecord(response) || typeof response.dataUrl !== 'string') throw new Error('extractImage.viewport returned no data URL');
+    return { dataUrl: response.dataUrl, width: readPositiveNumber(response.width), height: readPositiveNumber(response.height) };
   }
 
   private async extractPageImage(tabId: number, input: ExtractImageInput, abortSignal?: AbortSignal) {
@@ -272,10 +346,8 @@ class AgentToolRuntime {
   }
 
   private async navigateError(input: NavigateInput, message: string) {
-    if (this.currentTargetTabId() !== undefined && input.action === 'open' && message.startsWith('Tab is not operable:')) {
-      return this.targetUnavailableError(message.replace(/^Tab/, 'Target tab'));
-    }
-    if (this.currentTargetTabId() !== undefined && (input.action === 'back' || input.action === 'forward' || input.action === 'reload' || input.action === 'currentTab') && message.startsWith('Tab is not operable:')) {
+    const targetBoundActions = new Set<NavigateInput['action']>(['open', 'back', 'forward', 'reload', 'currentTab']);
+    if (this.currentTargetTabId() !== undefined && targetBoundActions.has(input.action) && message.startsWith('Tab is not operable:')) {
       return this.targetUnavailableError(message.replace(/^Tab/, 'Target tab'));
     }
     return this.errorFromResponse(message);
@@ -292,7 +364,68 @@ class AgentToolRuntime {
   }
 }
 
-function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId?: string) {
+// Context economy: oversized document content is spilled to /workspace so the
+// model context and event log only carry a preview plus a stable file path.
+export const DOCUMENT_SPILL_THRESHOLD_CHARS = 12_000;
+export const DOCUMENT_SPILL_PREVIEW_CHARS = 4_000;
+
+export async function spillLargeDocumentContent(
+  result: GetDocumentResult,
+  writeFile: (name: string, data: ArrayBuffer) => Promise<void>,
+): Promise<GetDocumentResult & { savedTo?: string; hint?: string }> {
+  if (!result.ok || result.source === 'file' || result.content.length <= DOCUMENT_SPILL_THRESHOLD_CHARS) return result;
+  try {
+    const name = `saved-${await shortContentHash(result.content)}.md`;
+    await writeFile(name, new TextEncoder().encode(result.content).buffer as ArrayBuffer);
+    return {
+      ...result,
+      content: result.content.slice(0, DOCUMENT_SPILL_PREVIEW_CHARS),
+      truncated: true,
+      savedTo: `/workspace/${name}`,
+      hint: `Preview only; the full content (${result.contentChars} chars) is saved. Read it with fs read or getDocument source:"file".`,
+    };
+  } catch (error) {
+    console.warn('Taber document spill skipped:', stringifyError(error));
+    return result;
+  }
+}
+
+export async function spillLargeReplValue(
+  result: BrowserReplResult,
+  writeFile: (name: string, data: ArrayBuffer) => Promise<void>,
+): Promise<BrowserReplResult | (Omit<BrowserReplResult, 'value'> & { value: string; truncated: true; valueChars: number; savedTo: string; hint: string })> {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(result.value);
+  } catch {
+    return result;
+  }
+  if (typeof serialized !== 'string' || serialized.length <= DOCUMENT_SPILL_THRESHOLD_CHARS) return result;
+  try {
+    const name = `saved-${await shortContentHash(serialized)}.json`;
+    await writeFile(name, new TextEncoder().encode(serialized).buffer as ArrayBuffer);
+    return {
+      ...result,
+      value: serialized.slice(0, DOCUMENT_SPILL_PREVIEW_CHARS),
+      truncated: true,
+      valueChars: serialized.length,
+      savedTo: `/workspace/${name}`,
+      hint: `Preview only; the full JSON value (${serialized.length} chars) is saved. Read it with fs read.`,
+    };
+  } catch (error) {
+    console.warn('Taber REPL spill skipped:', stringifyError(error));
+    return result;
+  }
+}
+
+async function shortContentHash(content: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+  return [...new Uint8Array(digest).slice(0, 4)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+type StaleSkillTracker = { readSkillPaths: string[]; consecutiveFailures: number; hinted: boolean };
+
+function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId: string | undefined, staleSkillTracker: StaleSkillTracker) {
   return function withRunLog<Input, Output>(toolName: string, run: (input: Input, abortSignal?: AbortSignal) => Promise<Output>) {
     return async (input: Input, options: { abortSignal?: AbortSignal; toolCallId?: string }) => {
       const toolCallId = options.toolCallId;
@@ -301,10 +434,16 @@ function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId?: strin
       try {
         const output = await run(input, options.abortSignal);
         const durationMs = elapsedMs(startedAt);
+        staleSkillTracker.consecutiveFailures = 0;
         await appendToolRun({ sessionId, toolName, input, output, durationMs });
         await emitEvent('tool.completed', { taskId, toolCallId, toolName, input, output, durationMs });
         return output;
       } catch (error) {
+        staleSkillTracker.consecutiveFailures += 1;
+        if (error instanceof Error && !staleSkillTracker.hinted && staleSkillTracker.consecutiveFailures >= 2 && staleSkillTracker.readSkillPaths.length > 0) {
+          staleSkillTracker.hinted = true;
+          error.message += `\nHint: you read ${staleSkillTracker.readSkillPaths.join(', ')} earlier. If that guidance is stale and caused these failures, update the skill with fs write.`;
+        }
         await emitEvent('tool.failed', { taskId, toolCallId, toolName, input, error: stringifyError(error), durationMs: elapsedMs(startedAt) });
         throw error;
       }
@@ -334,6 +473,19 @@ function requireOk(response: Response) {
 
 function normalizePageExecutionError(error: unknown) {
   return isPageAccessError(error) ? new Error(pageAccessErrorMessage()) : error instanceof Error ? error : new Error(String(error));
+}
+
+function readPositiveNumber(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function readHost(url: string | undefined) {
+  if (!url) return undefined;
+  try {
+    return new URL(url).hostname || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function isTargetUnavailableMessage(message: string) {
