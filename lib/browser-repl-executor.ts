@@ -283,7 +283,9 @@ function abortable<T>(run: () => Promise<T>, abortSignal?: AbortSignal) {
 }
 
 function normalizePageExecutionError(error: unknown) {
-  return isPageAccessError(error) ? new Error(pageAccessErrorMessage()) : error instanceof Error ? error : new Error(String(error));
+  const original = error instanceof Error ? error : new Error(String(error));
+  // Prefix the guidance but keep the original reason for diagnosis.
+  return isPageAccessError(original) ? new Error(`${pageAccessErrorMessage()} (${original.message})`) : original;
 }
 
 function isUserScriptsUnavailable(error: unknown) {

@@ -94,21 +94,35 @@ function readAction(value: unknown): BrowserInput['action'] {
 
 function readPageTarget(value: unknown, name: string): PageTarget {
   if (!isRecord(value)) throw new Error(`${name} must be a PageTarget object`);
-  const hasRole = 'role' in value || 'name' in value;
-  const hasPoint = 'x' in value || 'y' in value;
-  const locatorCount = ['ref', 'label', 'text', 'selector'].filter((key) => key in value).length + (hasRole ? 1 : 0) + (hasPoint ? 1 : 0);
-  if (locatorCount !== 1) throw new Error(`${name} must contain exactly one locator: ref, role/name, label, text, selector, or x/y`);
-  if ('ref' in value) return { ref: readNonEmptyString(value.ref, 'target.ref') };
-  if (hasPoint) return { x: readFiniteNumber(value.x, 'target.x'), y: readFiniteNumber(value.y, 'target.y') };
-  if (hasRole) return { role: readNonEmptyString(value.role, 'target.role'), name: readNonEmptyString(value.name, 'target.name') };
-  if ('label' in value) return { label: readNonEmptyString(value.label, 'target.label') };
-  if ('text' in value) return { text: readNonEmptyString(value.text, 'target.text') };
-  return { selector: readNonEmptyString(value.selector, 'target.selector') };
+  // Models often fill every locator field with placeholders (empty strings, 0/0
+  // coordinates) next to the one they mean. Drop placeholders first; coordinates
+  // yield to semantic locators; only real conflicts are errors.
+  const ref = readFilledString(value.ref);
+  const role = readFilledString(value.role);
+  const roleName = readFilledString(value.name);
+  const label = readFilledString(value.label);
+  const text = readFilledString(value.text);
+  const selector = readFilledString(value.selector);
+
+  // A ref comes from the latest snapshot and is the most precise locator; models
+  // often echo the matching text/role alongside it. Prefer the ref outright:
+  // stale refs come back as recoverable STALE_REF, so the feedback loop holds.
+  if (ref) return { ref };
+
+  const semantic: PageTarget[] = [];
+  if (role && roleName) semantic.push({ role, name: roleName });
+  if (label) semantic.push({ label });
+  if (text) semantic.push({ text });
+  if (selector) semantic.push({ selector });
+  if (semantic.length === 1) return semantic[0];
+  if (semantic.length === 0 && typeof value.x === 'number' && Number.isFinite(value.x) && typeof value.y === 'number' && Number.isFinite(value.y)) {
+    return { x: value.x, y: value.y };
+  }
+  throw new Error(`${name} must contain exactly one locator: ref, role/name, label, text, selector, or x/y`);
 }
 
-function readFiniteNumber(value: unknown, name: string) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${name} must be a finite number`);
-  return value;
+function readFilledString(value: unknown) {
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
 function readTimeout(value: unknown) {

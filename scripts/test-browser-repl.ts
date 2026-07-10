@@ -161,16 +161,19 @@ async function testStructuredBrowserActionsUseSemanticLocators() {
   assertBrowserSnapshotShape(snapshot.state);
   assert(snapshot.state.hints.some((hint: string) => hint.includes('Refs are scoped')));
   await runPageValue(page, { helper: 'browser', args: [{ action: 'snapshot' }] });
-  const staleByNewSnapshot = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { ref: oldSnapshotRef } }] });
-  assert.equal(staleByNewSnapshot.ok, false);
-  assert.equal(staleByNewSnapshot.code, 'STALE_REF');
-  const ref = staleByNewSnapshot.state.elements.find((element: Record<string, unknown>) => element.name === '模型广场').ref;
-  const refClick = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { ref } }] });
+  // A ref from an earlier snapshot keeps resolving while the element itself is unchanged.
+  const refClick = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { ref: oldSnapshotRef } }] });
   assert.equal(refClick.ok, true);
   assert.equal(link.clicked, true);
-  const staleRefClick = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { ref } }] });
+  // Page mutations alone do not invalidate the ref either.
+  const repeatClick = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { ref: oldSnapshotRef } }] });
+  assert.equal(repeatClick.ok, true);
+  // Removing the element makes the ref genuinely stale.
+  link.remove();
+  const staleRefClick = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { ref: oldSnapshotRef } }] });
   assert.equal(staleRefClick.ok, false);
   assert.equal(staleRefClick.code, 'STALE_REF');
+  page.addElement(link, {});
 
   const textClick = await runPageValue(page, { helper: 'browser', args: [{ action: 'click', target: { text: '模型广场' } }] });
   assert.equal(textClick.ok, true);

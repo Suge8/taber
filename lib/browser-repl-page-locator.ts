@@ -1,7 +1,7 @@
 import type { BrowserReplElementRef } from './browser-repl-command.ts';
 import { createBrowserReplPageIntrospection } from './browser-repl-page-introspection.ts';
 import type { BrowserPageTarget, BrowserReplPageLocator, BrowserStateOptions } from './browser-repl-page-types.ts';
-type BrowserSnapshotStore = { id: string; document: Document; url: string; dirty: boolean; refs: Map<string, BrowserReplElementRef>; observer?: MutationObserver };
+type BrowserSnapshotStore = { id: string; document: Document; refs: Map<string, BrowserReplElementRef> };
 export function installBrowserReplPageLocator() {
   const locator = {
     readVisibleText: pageReadVisibleText,
@@ -102,7 +102,6 @@ export function installBrowserReplPageLocator() {
     const allTargets = pageTargetElements('click');
     const elements = allTargets.filter((element) => pageIsVisible(element, scope)).sort(pageCompareElements).slice(0, limit).map((element, offset) => pageBrowserElement(element, offset + 1, store));
     const frames = pageFrameSummaries({ includeText: true, includeElements: true, elementSelector: pageInteractiveSelector(), textLimit: 1_000, elementLimit: 20 });
-    pageWatchSnapshotStore(store);
     return { title: document.title, url: location.href, text: text.value, elements, ...(frames.length ? { frames } : {}), truncated: text.truncated || textResult.truncated || allTargets.length > elements.length, limit, hints: pageBrowserHints(fullText.length === 0, fullText.length > 0 || allTargets.length > 0) };
   }
   function pageBrowserElement(element: HTMLElement, number: number, store: BrowserSnapshotStore, confidence?: number) { return { ...pageBrowserSummaryElement(element, number), ref: pageSnapshotRef(store, element, number), ...(confidence !== undefined ? { confidence: pageRound(confidence) } : {}) }; }
@@ -118,26 +117,24 @@ export function installBrowserReplPageLocator() {
   }
   function pageStartSnapshotStore() {
     const global = globalThis as typeof globalThis & { __taberBrowserSnapshotStore?: BrowserSnapshotStore; __taberBrowserSnapshotPageId?: string; __taberBrowserSnapshotSeq?: number };
-    global.__taberBrowserSnapshotStore?.observer?.disconnect();
+    const previous = global.__taberBrowserSnapshotStore;
     const pageId = global.__taberBrowserSnapshotPageId ?? (global.__taberBrowserSnapshotPageId = crypto.randomUUID().slice(0, 8));
     const seq = (global.__taberBrowserSnapshotSeq ?? 0) + 1;
     global.__taberBrowserSnapshotSeq = seq;
-    return global.__taberBrowserSnapshotStore = { id: `${pageId}.${seq}`, document, url: location.href, dirty: false, refs: new Map() };
+    // Carry earlier refs forward: dynamic pages mutate constantly, so "the page
+    // changed" must not invalidate refs. The marker + fingerprint checks in
+    // pageResolveSnapshotRef decide whether the target element itself is gone.
+    return global.__taberBrowserSnapshotStore = { id: `${pageId}.${seq}`, document, refs: new Map(previous?.document === document ? previous.refs : []) };
   }
   function pageSnapshotRef(store: BrowserSnapshotStore, element: HTMLElement, number: number) { const ref = `r${store.id}.${number}`; store.refs.set(ref, pageElementRef(element)); return ref; }
-  function pageWatchSnapshotStore(store: BrowserSnapshotStore) { store.observer = new MutationObserver((records) => { if (pageSnapshotChanged(records)) store.dirty = true; }); pageObserveMutations(store.observer); }
   function pageResolveSnapshotRef(ref: string) {
     const store = (globalThis as typeof globalThis & { __taberBrowserSnapshotStore?: BrowserSnapshotStore }).__taberBrowserSnapshotStore;
-    if (!store || store.document !== document || store.url !== location.href || !store.refs.has(ref)) throw new Error('Ref is stale. Use browser.snapshot again and retry with a ref from the latest browser state.');
-    if (store.dirty) throw new Error('Ref is stale because the page changed. Use browser.snapshot again and retry with a new ref.');
+    if (!store || store.document !== document || !store.refs.has(ref)) throw new Error('Ref is stale. Use browser.snapshot again and retry with a ref from the latest browser state.');
     const elementRef = store.refs.get(ref) as BrowserReplElementRef, element = elementRef.marker ? pageFindByMarker(elementRef.marker) : undefined;
     if (!element || !pageIsVisible(element, 'page')) throw new Error('Ref is stale because the target changed. Use browser.snapshot again and retry with a new ref.');
     if (element.tagName.toLowerCase() !== elementRef.tagName || elementRef.fingerprint && pageElementFingerprint(element) !== elementRef.fingerprint) throw new Error('Snapshot element changed; call browser.snapshot again and retry with a new ref.');
     return element;
   }
-  function pageSnapshotChanged(records: MutationRecord[] | undefined) { return !Array.isArray(records) || records.some((record) => !pageIgnoredSnapshotMutation(record)); }
-  function pageIgnoredSnapshotMutation(record: MutationRecord) { return record.type === 'attributes' && record.attributeName === 'data-taber-repl-ref' || pageMutationTouchesVisual(record); }
-  function pageMutationTouchesVisual(record: MutationRecord) { const nodes = [record.target, ...Array.from(record.addedNodes ?? []), ...Array.from(record.removedNodes ?? [])]; return nodes.some((node) => node instanceof Element && pageIsVisualElement(node)); }
   function pageTargetCandidate(candidate: { element: HTMLElement; score: number }, number: number) { return { ...pageBrowserSummaryElement(candidate.element, number), confidence: pageRound(candidate.score) }; }
   function pageResolvePageTarget(target: unknown, intent: 'click' | 'fill' | 'press') {
     try { const locator = pageReadPageTarget(target); if ('ref' in locator) return pageResolvedTarget(pageResolveSnapshotRef(locator.ref)); if ('x' in locator) return pageResolvePointTarget(locator.x, locator.y); if ('selector' in locator) return pageResolvedTarget(pageResolveTarget(locator.selector, 'browser')); if ('label' in locator) return pageResolveLabelTarget(locator.label); if ('role' in locator) return pageResolveScoredTarget(`${locator.role} ${locator.name}`, pageTargetCandidates(intent).filter((candidate) => pageNormalizeText(pageElementRole(candidate.element) || '') === pageNormalizeText(locator.role)).map((candidate) => ({ ...candidate, score: pageTextScore(locator.name, pageAccessibleName(candidate.element)) }))); return pageResolveScoredTarget(locator.text, pageTargetCandidates(intent).map((candidate) => ({ ...candidate, score: pageBestElementTextScore(locator.text, candidate.element) }))); }

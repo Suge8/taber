@@ -23,7 +23,10 @@ class BrowserFrameRouter {
   private readonly runFrameCommand: RunFrameCommand;
   private readonly callChromeApi: CallChromeApi;
   private readonly refs = new Map<string, RoutedRef>();
-  private readonly latestSnapshotByTab = new Map<number, string>();
+  // Keep refs from the two most recent snapshots per tab: dynamic pages snapshot
+  // often, and a ref from the previous snapshot usually still resolves (the
+  // in-page marker/fingerprint checks catch genuinely changed targets).
+  private readonly recentSnapshotsByTab = new Map<number, string[]>();
   private readonly tabQueues = new Map<number, Promise<void>>();
   private refSeq = 0;
 
@@ -68,7 +71,7 @@ class BrowserFrameRouter {
 
   private async executeRefAction(tabId: number, command: BrowserReplPageCommand, input: BrowserInput, ref: string, abortSignal?: AbortSignal) {
     const routed = this.refs.get(ref);
-    if (!routed || routed.tabId !== tabId || this.latestSnapshotByTab.get(tabId) !== routed.snapshotId) return this.staleRef(tabId, input, STALE_REF_MESSAGE, abortSignal);
+    if (!routed || routed.tabId !== tabId) return this.staleRef(tabId, input, STALE_REF_MESSAGE, abortSignal);
     const frame = (await this.frames(tabId, abortSignal)).find((item) => item.frameId === routed.frameId);
     if (!frame || frame.url !== routed.frameUrl) return this.staleRef(tabId, input, 'Ref is stale because the target frame changed. Use browser.snapshot again and retry with a new ref.', abortSignal);
     const nextInput = { ...input, target: { ref: routed.localRef } };
@@ -95,9 +98,7 @@ class BrowserFrameRouter {
   private async snapshot(tabId: number, command: BrowserReplPageCommand, abortSignal?: AbortSignal, knownFrames?: FrameInfo[]) {
     const input = readBrowserInput(command);
     const frames = knownFrames ?? await this.frames(tabId, abortSignal);
-    const snapshotId = newSnapshotId();
-    this.clearTabRefs(tabId);
-    this.latestSnapshotByTab.set(tabId, snapshotId);
+    const snapshotId = this.beginSnapshot(tabId);
 
     const mainFrame = frames.find((frame) => frame.frameId === MAIN_FRAME_ID) ?? { frameId: MAIN_FRAME_ID, url: '' };
     const main = await this.runFrameCommand(tabId, MAIN_FRAME_ID, command, abortSignal) as BrowserResult;
@@ -136,9 +137,7 @@ class BrowserFrameRouter {
   private withRoutedMainState(tabId: number, result: BrowserResult) {
     const state = isRecord(result.state) ? { ...result.state } : undefined;
     if (!state) return result;
-    const snapshotId = newSnapshotId();
-    this.clearTabRefs(tabId);
-    this.latestSnapshotByTab.set(tabId, snapshotId);
+    const snapshotId = this.beginSnapshot(tabId);
     state.elements = this.rewriteElements(state.elements, { tabId, frameId: MAIN_FRAME_ID, frameUrl: stringValue(state.url), snapshotId });
     state.hints = Array.isArray(state.hints) ? state.hints : [];
     state.truncated = state.truncated === true;
@@ -175,8 +174,12 @@ class BrowserFrameRouter {
     return ref;
   }
 
-  private clearTabRefs(tabId: number) {
-    for (const [ref, routed] of this.refs) if (routed.tabId === tabId) this.refs.delete(ref);
+  private beginSnapshot(tabId: number) {
+    const snapshotId = newSnapshotId();
+    const recent = [snapshotId, ...(this.recentSnapshotsByTab.get(tabId) ?? [])].slice(0, 2);
+    this.recentSnapshotsByTab.set(tabId, recent);
+    for (const [ref, routed] of this.refs) if (routed.tabId === tabId && !recent.includes(routed.snapshotId)) this.refs.delete(ref);
+    return snapshotId;
   }
 
   private async frames(tabId: number, abortSignal?: AbortSignal) {
