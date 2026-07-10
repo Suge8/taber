@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { projectAgentEvents } from '../lib/agent-event-projection.ts';
 import { rawToolDetails, toolHeaderSummary } from '../lib/sidepanel-tool-presentation.ts';
-import { controlledTargetFromContext, createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, hideReasoningText, latestImagePreview, orderQuickActions, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
+import { activePart, activityEndedAt, activityGroupStatus, activityStartedAt, controlledTargetFromContext, createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, groupTurnParts, hideReasoningText, latestImagePreview, mergeLiveAgentEvent, quickActionOrder, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
+import type { AgentEvent } from '../lib/db.ts';
 import { detectLocale, formatTime, messages as sidepanelMessages } from '../lib/sidepanel-i18n.ts';
 import { normalizeAssistantMarkdown } from '../lib/components/ai-elements/response/markdown.ts';
 
@@ -12,6 +13,14 @@ const events = [
   { id: 4, sessionId: 1, type: 'tool.completed', payload: { taskId: 'task-1', toolCallId: 'call-2', toolName: 'extractImage', output: { ok: true, source: 'viewport', dataUrl: 'data:image/png;base64,abc', mediaType: 'image/png', width: 10, height: 20 } }, createdAt: 4 },
   { id: 5, sessionId: 1, type: 'message.created', payload: { taskId: 'task-1', role: 'assistant', text: '<think>private</think>Summary' }, createdAt: 5 },
 ] as const;
+
+const outOfOrderEvents: AgentEvent[] = [
+  { id: 1, sessionId: 1, type: 'task.started', payload: {}, createdAt: 1 },
+  { id: 3, sessionId: 1, type: 'message.appended', payload: {}, createdAt: 3 },
+];
+const reorderedEvents = mergeLiveAgentEvent(outOfOrderEvents, { id: 2, sessionId: 1, type: 'message.created', payload: {}, createdAt: 2 });
+assert.deepEqual(reorderedEvents.map((event) => event.id), [1, 2, 3]);
+assert.strictEqual(mergeLiveAgentEvent(reorderedEvents, reorderedEvents[1]), reorderedEvents);
 
 const projection = projectAgentEvents([...events]);
 assert.equal(projection.taskState, 'running');
@@ -114,6 +123,106 @@ assert.deepEqual(progressTimeline[1].kind === 'assistantTurn' ? progressTimeline
 assert.equal(progressTimeline[1].kind === 'assistantTurn' && progressTimeline[1].turn.parts[0].kind === 'reasoning' ? progressTimeline[1].turn.parts[0].reasoning.text : '', 'Need inspect');
 assert.equal(progressTimeline[1].kind === 'assistantTurn' && progressTimeline[1].turn.parts[1].kind === 'tool' ? progressTimeline[1].turn.parts[1].tool.status : '', 'pending');
 assert.match(progressTimeline[1].kind === 'assistantTurn' && progressTimeline[1].turn.parts[1].kind === 'tool' ? progressTimeline[1].turn.parts[1].tool.inputSummary : '', /return 1/);
+
+{
+  const groupedTimeline = deriveTimeline([
+    { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'group-task', prompt: 'go' }, createdAt: 1 },
+    { id: 2, sessionId: 1, type: 'reasoning.started', payload: { taskId: 'group-task', reasoningId: 'r1' }, createdAt: 2 },
+    { id: 3, sessionId: 1, type: 'reasoning.completed', payload: { taskId: 'group-task', reasoningId: 'r1', text: 'plan' }, createdAt: 3 },
+    { id: 4, sessionId: 1, type: 'tool.started', payload: { taskId: 'group-task', toolCallId: 'c1', toolName: 'getDocument', input: {} }, createdAt: 4 },
+    { id: 5, sessionId: 1, type: 'tool.completed', payload: { taskId: 'group-task', toolCallId: 'c1', toolName: 'getDocument', output: { ok: true } }, createdAt: 9 },
+    { id: 6, sessionId: 1, type: 'message.created', payload: { taskId: 'group-task', role: 'assistant', text: 'interim' }, createdAt: 10 },
+    { id: 7, sessionId: 1, type: 'tool.started', payload: { taskId: 'group-task', toolCallId: 'c2', toolName: 'navigate', input: { url: 'https://example.com' } }, createdAt: 11 },
+  ]);
+  const turn = groupedTimeline[1];
+  assert.ok(turn.kind === 'assistantTurn');
+  const blocks = groupTurnParts(turn.turn.parts);
+  assert.deepEqual(blocks.map((block) => block.kind), ['activity', 'text', 'activity']);
+  const first = blocks[0];
+  assert.ok(first.kind === 'activity');
+  assert.equal(first.parts.length, 2);
+  assert.equal(first.id, `activity:${first.parts[0].id}`);
+  assert.equal(activityStartedAt(first.parts), 2);
+  assert.equal(activityEndedAt(first.parts), 9);
+  assert.equal(activityGroupStatus(first.parts, turn.turn.status, false), 'completed');
+  // No running part left in the first block: active falls back to the latest part.
+  assert.equal(activePart(first.parts).kind, 'tool');
+  const second = blocks[2];
+  assert.ok(second.kind === 'activity');
+  const runningTool = activePart(second.parts);
+  assert.ok(runningTool.kind === 'tool' && runningTool.tool.status === 'running');
+  assert.equal(activityGroupStatus(second.parts, turn.turn.status, true), 'running');
+  assert.deepEqual(groupTurnParts([]), []);
+}
+
+{
+  const streamingTextTimeline = deriveTimeline([
+    { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'streaming-text', prompt: 'go' }, createdAt: 1 },
+    { id: 2, sessionId: 1, type: 'tool.completed', payload: { taskId: 'streaming-text', toolCallId: 'done-call', toolName: 'getDocument', output: { ok: true } }, createdAt: 2 },
+    { id: 3, sessionId: 1, type: 'message.appended', payload: { taskId: 'streaming-text', messageId: 'answer', role: 'assistant', delta: 'Writing answer…' }, createdAt: 3 },
+  ]);
+  const streamingTurn = streamingTextTimeline[1];
+  assert.ok(streamingTurn.kind === 'assistantTurn');
+  const streamingBlocks = groupTurnParts(streamingTurn.turn.parts);
+  assert.deepEqual(streamingBlocks.map((block) => block.kind), ['activity', 'text']);
+  assert.equal(streamingTurn.turn.status, 'running');
+  const completedBeforeText = streamingBlocks[0];
+  assert.ok(completedBeforeText.kind === 'activity');
+  assert.equal(activityGroupStatus(completedBeforeText.parts, streamingTurn.turn.status, false), 'completed');
+
+  const failedAfterTextTimeline = deriveTimeline([
+    { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'failed-after-text', prompt: 'go' }, createdAt: 1 },
+    { id: 2, sessionId: 1, type: 'tool.completed', payload: { taskId: 'failed-after-text', toolCallId: 'done-call', toolName: 'getDocument', output: { ok: true } }, createdAt: 2 },
+    { id: 3, sessionId: 1, type: 'message.created', payload: { taskId: 'failed-after-text', role: 'assistant', text: 'Partial answer' }, createdAt: 3 },
+    { id: 4, sessionId: 1, type: 'task.failed', payload: { taskId: 'failed-after-text', error: 'later failure' }, createdAt: 4 },
+  ]);
+  const failedAfterTextTurn = failedAfterTextTimeline[1];
+  assert.ok(failedAfterTextTurn.kind === 'assistantTurn');
+  const failedAfterTextBlocks = groupTurnParts(failedAfterTextTurn.turn.parts);
+  assert.deepEqual(failedAfterTextBlocks.map((block) => block.kind), ['activity', 'text']);
+  assert.equal(failedAfterTextTurn.turn.status, 'failed');
+  const successfulBeforeFailure = failedAfterTextBlocks[0];
+  assert.ok(successfulBeforeFailure.kind === 'activity');
+  assert.equal(activityGroupStatus(successfulBeforeFailure.parts, failedAfterTextTurn.turn.status, false), 'completed');
+}
+
+{
+  const failedTimeline = deriveTimeline([
+    { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'failed-group', prompt: 'go' }, createdAt: 1 },
+    { id: 2, sessionId: 1, type: 'tool.started', payload: { taskId: 'failed-group', toolCallId: 'failed-call', toolName: 'navigate', input: {} }, createdAt: 2 },
+    { id: 3, sessionId: 1, type: 'tool.failed', payload: { taskId: 'failed-group', toolCallId: 'failed-call', toolName: 'navigate', error: 'boom' }, createdAt: 3 },
+    { id: 4, sessionId: 1, type: 'task.failed', payload: { taskId: 'failed-group', error: 'boom' }, createdAt: 4 },
+  ]);
+  const failedTurn = failedTimeline[1];
+  assert.ok(failedTurn.kind === 'assistantTurn');
+  const failedBlock = groupTurnParts(failedTurn.turn.parts)[0];
+  assert.ok(failedBlock.kind === 'activity');
+  assert.equal(failedTurn.turn.status, 'failed');
+  assert.equal(activityGroupStatus(failedBlock.parts, failedTurn.turn.status, true), 'failed');
+
+  const stoppedTimeline = deriveTimeline([
+    { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'stopped-group', prompt: 'go' }, createdAt: 1 },
+    { id: 2, sessionId: 1, type: 'tool.started', payload: { taskId: 'stopped-group', toolCallId: 'stopped-call', toolName: 'browserRepl', input: {} }, createdAt: 2 },
+    { id: 3, sessionId: 1, type: 'task.cancelled', payload: { taskId: 'stopped-group' }, createdAt: 3 },
+  ]);
+  const stoppedTurn = stoppedTimeline[1];
+  assert.ok(stoppedTurn.kind === 'assistantTurn');
+  const stoppedBlock = groupTurnParts(stoppedTurn.turn.parts)[0];
+  assert.ok(stoppedBlock.kind === 'activity');
+  assert.equal(stoppedTurn.turn.status, 'cancelled');
+  assert.equal(activityGroupStatus(stoppedBlock.parts, stoppedTurn.turn.status, true), 'stopped');
+
+  const warningTimeline = deriveTimeline([
+    { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'warning-group', prompt: 'go' }, createdAt: 1 },
+    { id: 2, sessionId: 1, type: 'tool.completed', payload: { taskId: 'warning-group', toolCallId: 'warning-call', toolName: 'getDocument', output: { ok: false, code: 'NO_SELECTION' } }, createdAt: 2 },
+    { id: 3, sessionId: 1, type: 'task.completed', payload: { taskId: 'warning-group', text: '' }, createdAt: 3 },
+  ]);
+  const warningTurn = warningTimeline[1];
+  assert.ok(warningTurn.kind === 'assistantTurn');
+  const warningBlock = groupTurnParts(warningTurn.turn.parts)[0];
+  assert.ok(warningBlock.kind === 'activity');
+  assert.equal(activityGroupStatus(warningBlock.parts, warningTurn.turn.status, true), 'warning');
+}
 
 assert.equal(hideReasoningText('<think>secret Visible'), '[reasoning hidden]');
 assert.equal(hideReasoningText('<think >secret</think>Visible'), '[reasoning hidden]Visible');
@@ -234,8 +343,7 @@ const interleavedTimelineEntries = deriveTimeline([
   { id: 7, sessionId: 1, type: 'task.completed', payload: { taskId: 'linear-task', text: 'Before tool. After tool.' }, createdAt: 7 },
 ]);
 assert.deepEqual(interleavedTimelineEntries[1].kind === 'assistantTurn' ? interleavedTimelineEntries[1].turn.parts.map((part) => part.kind) : [], ['text', 'tool', 'text']);
-assert.deepEqual(orderQuickActions({ title: 'Product detail', url: 'https://shop.example/item/1' }).slice(0, 2), ['compare', 'summarize']);
-assert.deepEqual(orderQuickActions({ title: 'API docs', url: 'https://example.com/docs' }).slice(0, 2), ['summarize', 'skills']);
+assert.deepEqual(quickActionOrder, ['summarize', 'skills', 'research', 'compare']);
 const manualBrowserControlGuide = settingsTabStartsBrowserControlGuide('preferences', true);
 assert.equal(manualBrowserControlGuide, true);
 assert.equal(settingsTabStartsBrowserControlGuide('providers', true), false);

@@ -74,9 +74,76 @@ export type TimelineEntry =
   | { kind: 'message'; id: string; createdAt: number; message: ConversationMessage }
   | { kind: 'assistantTurn'; id: string; createdAt: number; turn: AssistantTimelineTurn };
 
-const shopPattern = /(?:shop|store|product|item|sku|cart|checkout|price|taobao|tmall|jd|amazon|ebay|etsy|1688|aliexpress|walmart)/i;
-const researchPattern = /(?:search|wiki|paper|scholar|arxiv|research|论文|百科|搜索|调研)/i;
-const articlePattern = /(?:blog|article|docs?|guide|post|news|medium|substack|文档|文章|博客|新闻)/i;
+export type ActivityPart = Extract<AssistantTimelinePart, { kind: 'tool' | 'reasoning' }>;
+export type ActivityGroupStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'warning';
+
+export function mergeLiveAgentEvent(events: AgentEvent[], event: AgentEvent): AgentEvent[] {
+  const last = events.at(-1);
+  if (!last || event.id > last.id) return [...events, event];
+  if (events.some((existing) => existing.id === event.id)) return events;
+  const index = events.findIndex((existing) => existing.id > event.id);
+  return [...events.slice(0, index), event, ...events.slice(index)];
+}
+
+export type TurnBlock =
+  | { kind: 'text'; id: string; createdAt: number; message: ConversationMessage }
+  | { kind: 'activity'; id: string; parts: ActivityPart[] };
+
+/** Collapse consecutive tool/reasoning parts into activity blocks; text parts split blocks. */
+export function groupTurnParts(parts: AssistantTimelinePart[]): TurnBlock[] {
+  const blocks: TurnBlock[] = [];
+  for (const part of parts) {
+    if (part.kind === 'text') {
+      blocks.push(part);
+      continue;
+    }
+    const last = blocks[blocks.length - 1];
+    if (last?.kind === 'activity') last.parts.push(part);
+    else blocks.push({ kind: 'activity', id: `activity:${part.id}`, parts: [part] });
+  }
+  return blocks;
+}
+
+export function activePart(parts: ActivityPart[]): ActivityPart {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index];
+    const status = part.kind === 'tool' ? part.tool.status : part.reasoning.status;
+    if (status === 'running' || status === 'pending') return part;
+  }
+  return parts[parts.length - 1];
+}
+
+export function activityGroupStatus(parts: ActivityPart[], turnStatus: AssistantTimelineTurn['status'], terminalGroup: boolean): ActivityGroupStatus {
+  const failedTool = parts.some((part) => part.kind === 'tool' && part.tool.status === 'failed');
+  if (failedTool || (terminalGroup && turnStatus === 'failed')) return 'failed';
+  if (terminalGroup && turnStatus === 'cancelled') return 'stopped';
+  if (terminalGroup && turnStatus === 'running') return 'running';
+  if (parts.some(isActiveActivityPart)) return 'stopped';
+  if (parts.some((part) => part.kind === 'tool' && isRecoverableActivityOutput(part.tool.output))) return 'warning';
+  return 'completed';
+}
+
+export function activityStartedAt(parts: ActivityPart[]): number {
+  return parts[0]?.createdAt ?? 0;
+}
+
+export function activityEndedAt(parts: ActivityPart[]): number {
+  let ended = 0;
+  for (const part of parts) {
+    const updatedAt = part.kind === 'tool' ? part.tool.updatedAt : part.reasoning.updatedAt;
+    if (updatedAt > ended) ended = updatedAt;
+  }
+  return ended;
+}
+
+function isActiveActivityPart(part: ActivityPart) {
+  const status = part.kind === 'tool' ? part.tool.status : part.reasoning.status;
+  return status === 'pending' || status === 'running';
+}
+
+function isRecoverableActivityOutput(output: unknown) {
+  return Boolean(output && typeof output === 'object' && !Array.isArray(output) && (output as Record<string, unknown>).ok === false);
+}
 
 export function sidebarTaskViewFromProjection(projection: AgentEventProjection): SidebarTaskView {
   const task = projection.currentTask;
@@ -156,13 +223,7 @@ export function shouldAdvanceToProviderSetup(input: ProviderSetupAdvanceInput): 
   return input.settingsOpen && input.promptedForBrowserControl && !input.missingBrowserControl && !input.hasAnyModel && !input.promptedForMissingModel;
 }
 
-export function orderQuickActions(context: Record<string, unknown> | undefined): QuickActionMode[] {
-  const text = `${readString(context?.title) ?? ''} ${readString(context?.url) ?? ''}`;
-  if (shopPattern.test(text)) return ['compare', 'summarize', 'skills', 'research'];
-  if (researchPattern.test(text)) return ['research', 'summarize', 'skills', 'compare'];
-  if (articlePattern.test(text)) return ['summarize', 'skills', 'research', 'compare'];
-  return ['summarize', 'skills', 'research', 'compare'];
-}
+export const quickActionOrder: QuickActionMode[] = ['summarize', 'skills', 'research', 'compare'];
 
 export function createIntentPrompt(mode: IntentQuickActionMode, topic: string, tabs: QuickActionTab[], prompts: QuickActionPromptSet): string {
   const normalizedTopic = topic.trim();
@@ -217,8 +278,4 @@ function mergedSources(projection: AgentEventProjection, context: Record<string,
   if (contextSource) sources.set(contextSource.url, contextSource);
   for (const source of projection.sources) if (!sources.has(source.url)) sources.set(source.url, source);
   return [...sources.values()].slice(0, 5);
-}
-
-function readString(value: unknown): string | undefined {
-  return typeof value === 'string' ? value : undefined;
 }

@@ -100,8 +100,11 @@ function imageSummary(input: Record<string, unknown> | undefined, output: Record
 
 function fsSummary(input: Record<string, unknown> | undefined, output: Record<string, unknown> | undefined, labels: SidepanelMessages) {
   const path = readString(output?.path) || readString(input?.path);
-  const target = path ? truncate(path.replace(/^\/(workspace|skills)\//, ''), 28) : readString(input?.action) || '';
-  return target ? `${labels.tool.actions.fs} · ${target}` : labels.tool.actions.fs;
+  // Skill reads/writes are a distinct concept for users ("using site know-how"),
+  // not generic file access; label them accordingly.
+  const action = path?.startsWith('/skills/') ? labels.tool.actions.skill : labels.tool.actions.fs;
+  const target = path ? truncate(path.replace(/^\/(workspace|skills)\//, '').replace(/\.md$/, ''), 28) : readString(input?.action) || '';
+  return target ? `${action} · ${target}` : action;
 }
 
 function debugSummary(output: Record<string, unknown> | undefined, labels: SidepanelMessages) {

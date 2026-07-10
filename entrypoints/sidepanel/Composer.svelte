@@ -14,25 +14,34 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
-  import { createIntentPrompt, orderQuickActions, type IntentQuickActionMode, type QuickActionMode } from '$lib/sidepanel-view.ts';
+  import { createIntentPrompt, quickActionOrder, type IntentQuickActionMode, type QuickActionMode } from '$lib/sidepanel-view.ts';
   import { deleteSkill, listSkills, setSkillEnabled } from '$lib/skills.ts';
+  import { builtinSkillDisplay } from '$lib/skills-seeds.ts';
   import type { Skill } from '$lib/db.ts';
+  import BookOpen from '@lucide/svelte/icons/book-open';
+  import CodeXml from '@lucide/svelte/icons/code-xml';
+  import MessageCircleMore from '@lucide/svelte/icons/message-circle-more';
+  import MonitorPlay from '@lucide/svelte/icons/monitor-play';
+  import Plane from '@lucide/svelte/icons/plane';
+  import ShoppingCart from '@lucide/svelte/icons/shopping-cart';
+  import Ticket from '@lucide/svelte/icons/ticket';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import { reasoningEffortOptionsForModel, type ProviderWithModels, type ReasoningEffort } from '$lib/provider-store.ts';
   import type { Notify } from './toast.ts';
-  import Brain from 'phosphor-svelte/lib/Brain';
-  import CaretDown from 'phosphor-svelte/lib/CaretDown';
-  import Check from 'phosphor-svelte/lib/Check';
-  import CursorClick from 'phosphor-svelte/lib/CursorClick';
-  import FileText from 'phosphor-svelte/lib/FileText';
-  import GlobeSimple from 'phosphor-svelte/lib/GlobeSimple';
-  import MagnifyingGlass from 'phosphor-svelte/lib/MagnifyingGlass';
-  import Paperclip from 'phosphor-svelte/lib/Paperclip';
-  import PaperPlaneTilt from 'phosphor-svelte/lib/PaperPlaneTilt';
-  import Robot from 'phosphor-svelte/lib/Robot';
-  import Scales from 'phosphor-svelte/lib/Scales';
-  import Sparkle from 'phosphor-svelte/lib/Sparkle';
-  import Square from 'phosphor-svelte/lib/Square';
-  import X from 'phosphor-svelte/lib/X';
+  import Bot from '@lucide/svelte/icons/bot';
+  import BrainCircuit from '@lucide/svelte/icons/brain-circuit';
+  import Check from '@lucide/svelte/icons/check';
+  import CaretDown from '@lucide/svelte/icons/chevron-down';
+  import GlobeSimple from '@lucide/svelte/icons/globe';
+  import MousePointerClick from '@lucide/svelte/icons/mouse-pointer-click';
+  import Paperclip from '@lucide/svelte/icons/paperclip';
+  import Rocket from '@lucide/svelte/icons/rocket';
+  import Scale from '@lucide/svelte/icons/scale';
+  import Search from '@lucide/svelte/icons/search';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import Square from '@lucide/svelte/icons/square';
+  import Summary from '@lucide/svelte/icons/summary';
+  import X from '@lucide/svelte/icons/x';
 
   export type WindowTab = { id: number; title: string; url: string; favIconUrl?: string; active?: boolean };
 
@@ -47,7 +56,6 @@
     selectedModelLabel: string;
     missingModel: boolean;
     reasoningEffort: ReasoningEffort;
-    context?: Record<string, unknown>;
     onSelectModel: (id: number) => void | Promise<void>;
     onSelectReasoningEffort: (value: ReasoningEffort) => void | Promise<void>;
     onMissingModel: () => void;
@@ -68,7 +76,6 @@
     selectedModelLabel,
     missingModel,
     reasoningEffort,
-    context,
     onSelectModel,
     onSelectReasoningEffort,
     onMissingModel,
@@ -98,11 +105,12 @@
   let fileInput = $state<HTMLInputElement | undefined>(undefined);
   let tabsLoadToken = 0;
 
-  const icons = { summarize: FileText, research: MagnifyingGlass, skills: Sparkle, compare: Scales } as const;
+  const icons = { summarize: Summary, research: Search, skills: BookOpen, compare: Scale } as const;
+
   const microSlide = { duration: 160, easing: cubicOut };
   const baseSlide = { duration: 180, easing: cubicOut };
 
-  const suggestions = $derived(orderQuickActions(context).map((mode) => ({ mode, icon: icons[mode] })));
+  const suggestions = $derived(quickActionOrder.map((mode) => ({ mode, icon: icons[mode] })));
   const selectedTabs = $derived.by(() => tabs.filter((tab) => selectedTabIds.has(tab.id)));
   const orderedTabs = $derived([...tabs].sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active))));
   const tabsMenuClass = $derived(!loadingTabs && tabs.length === 0 ? 'min-w-32 rounded-2xl p-1.5' : 'w-[min(18rem,calc(100vw-2rem))] rounded-2xl p-2');
@@ -145,6 +153,52 @@
   async function removeSkill(skill: Skill) {
     await deleteSkill(skill.id);
     skillList = await listSkills();
+  }
+
+  // Skills panel grouping: what Taber learned on its own ("custom") leads and
+  // stays visible even when empty so users discover that Taber accumulates site
+  // experience; builtin categories follow in a fixed order.
+  const SKILL_GROUP_ORDER = ['custom', 'ticketing', 'shopping', 'social', 'video', 'travel', 'developer', 'reference'] as const;
+  type SkillGroupKey = (typeof SKILL_GROUP_ORDER)[number];
+  type SkillGroup = { key: SkillGroupKey; skills: Skill[]; enabledCount: number };
+  const skillGroupIcons = { custom: Sparkles, ticketing: Ticket, shopping: ShoppingCart, social: MessageCircleMore, video: MonitorPlay, travel: Plane, developer: CodeXml, reference: BookOpen } as const;
+
+  let skillGroups = $derived(groupSkills(skillList));
+  let openSkillGroups = $state<Record<string, boolean>>({});
+
+  function toggleSkillGroupOpen(key: SkillGroupKey) {
+    openSkillGroups = { ...openSkillGroups, [key]: !openSkillGroups[key] };
+  }
+
+  function groupSkills(skills: Skill[]): SkillGroup[] {
+    const byKey = new Map<SkillGroupKey, Skill[]>();
+    for (const skill of skills) {
+      const key: SkillGroupKey = skill.category ?? 'custom';
+      byKey.set(key, [...(byKey.get(key) ?? []), skill]);
+    }
+    return SKILL_GROUP_ORDER
+      .filter((key) => key === 'custom' || (byKey.get(key)?.length ?? 0) > 0)
+      .map((key) => {
+        const groupSkills = byKey.get(key) ?? [];
+        return { key, skills: groupSkills, enabledCount: groupSkills.filter((skill) => skill.enabled).length };
+      });
+  }
+
+  async function toggleSkillGroup(group: SkillGroup) {
+    // Any disabled member ⇒ enable all; fully enabled ⇒ disable all.
+    const enable = group.enabledCount < group.skills.length;
+    await Promise.all(group.skills.filter((skill) => skill.enabled !== enable).map((skill) => setSkillEnabled(skill.id, enable)));
+    skillList = await listSkills();
+  }
+
+  function skillDisplayName(skill: Skill) {
+    if (locale === 'zh' && skill.source === 'builtin') return builtinSkillDisplay(skill.name)?.nameZh ?? skill.name;
+    return skill.name;
+  }
+
+  function skillDisplayDescription(skill: Skill) {
+    if (locale === 'zh' && skill.source === 'builtin') return builtinSkillDisplay(skill.name)?.descriptionZh ?? skill.description;
+    return skill.description;
   }
 
   async function openIntent(mode: IntentQuickActionMode) {
@@ -253,11 +307,11 @@
   }
 
   function quickActionGridClass() {
-    return locale === 'en' ? 'grid grid-cols-2 gap-1.5' : 'grid grid-cols-4 gap-1.5';
+    return locale === 'en' ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-4 gap-2';
   }
 
   function quickActionClass(mode: QuickActionMode, selected: boolean) {
-    const base = 'inline-flex h-8 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-[12.5px] ring-1 transition-[background-color,color,box-shadow,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]';
+    const base = 'inline-flex h-11 min-w-0 items-center justify-center gap-2 rounded-2xl px-3 text-[13px] font-medium ring-1 transition-[background-color,color,box-shadow,opacity,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]';
     if (activeIntent && !selected) return `${base} pointer-events-none invisible scale-[0.98] bg-surface text-muted-foreground opacity-0 ring-line/60`;
     if (selected) return `${base} ${activeIntent ? '' : 'fx-enter'} bg-primary text-primary-foreground ring-primary/20 shadow-[0_6px_18px_oklch(0_0_0_/_0.06)]`;
     if (mode === 'summarize') return `${base} fx-enter quick-action-summarize`;
@@ -282,7 +336,7 @@
           aria-hidden={Boolean(activeIntent && !selected)}
           onclick={() => void runQuickAction(item.mode)}
         >
-          <item.icon class="size-3.5 shrink-0" weight="duotone" />
+          <item.icon class="fx-icon-draw size-[17px] shrink-0" strokeWidth={1.9} />
           <span class="truncate">{suggestionLabel(item.mode)}</span>
         </button>
       {/each}
@@ -290,45 +344,92 @@
   </div>
 {/if}
 
+{#snippet skillSwitch(checked: boolean, label: string, onToggle: () => void)}
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    aria-label={label}
+    title={label}
+    class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-[background-color,box-shadow] duration-150 ease-[var(--ease-out)] active:scale-[0.94] {checked ? 'bg-primary' : 'bg-surface-2 ring-line/80 ring-1 ring-inset'}"
+    onclick={onToggle}
+  >
+    <span class="bg-surface pointer-events-none absolute left-0.5 size-3 rounded-full shadow-[0_1px_2px_oklch(0_0_0_/_0.18)] transition-transform duration-150 ease-[var(--ease-out)] {checked ? 'translate-x-3' : ''}"></span>
+  </button>
+{/snippet}
+
 <Dialog.Root bind:open={skillsOpen}>
-  <Dialog.Content class="min-h-56 w-[min(92vw,24rem)] gap-0 overflow-hidden rounded-2xl p-0">
-    <header class="px-5 pb-3 pt-4">
-      <Dialog.Title class="text-[15px] font-semibold tracking-tight text-foreground">{q.skills}</Dialog.Title>
-      <Dialog.Description class="text-muted-foreground pt-1 text-xs">{q.skillsHint}</Dialog.Description>
+  <Dialog.Content class="min-h-56 w-[min(92vw,26rem)] gap-0 overflow-hidden rounded-2xl p-0">
+    <header class="px-5 pb-3 pt-5">
+      <Dialog.Title class="text-[16px] font-semibold tracking-tight text-foreground">{q.skills}</Dialog.Title>
+      <Dialog.Description class="text-muted-foreground pt-1 text-[12.5px]">{q.skillsHint}</Dialog.Description>
     </header>
-    <div class="min-h-44 max-h-[60vh] overflow-y-auto px-3 pb-4">
-      {#if skillList.length === 0}
-        <p class="text-muted-foreground px-2 py-6 text-center text-xs leading-relaxed">{q.skillsEmpty}</p>
-      {:else}
-        <ul class="space-y-1.5">
-          {#each skillList as skill (skill.id)}
-            <li class="ring-line/60 rounded-xl px-3 py-2.5 ring-1 {skill.enabled ? '' : 'opacity-55'}">
-              <div class="flex items-start justify-between gap-2">
-                <div class="min-w-0">
-                  <p class="truncate text-[13px] font-medium text-foreground">
-                    {skill.name}
-                    {#if !skill.enabled}<span class="text-muted-foreground text-[11px] font-normal">· {q.skillDisabled}</span>{/if}
-                  </p>
-                  <p class="text-muted-foreground truncate text-[11.5px]">{skill.hosts.join(', ')}</p>
-                  <p class="text-muted-foreground mt-1 line-clamp-2 text-xs leading-snug">{skill.description}</p>
-                </div>
-                <div class="flex shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    class="hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-lg px-2 py-1 text-[11.5px] transition-colors duration-150"
-                    onclick={() => toggleSkill(skill)}
-                  >{skill.enabled ? q.skillDisable : q.skillEnable}</button>
-                  <button
-                    type="button"
-                    class="hover:bg-surface-2 text-muted-foreground hover:text-destructive rounded-lg px-2 py-1 text-[11.5px] transition-colors duration-150"
-                    onclick={() => removeSkill(skill)}
-                  >{q.skillDelete}</button>
-                </div>
-              </div>
-            </li>
-          {/each}
-        </ul>
-      {/if}
+    <div class="min-h-44 max-h-[64vh] space-y-1.5 overflow-y-auto px-3 pb-4 pt-1 [scrollbar-gutter:stable]">
+      {#each skillGroups as group, groupIndex (group.key)}
+        {@const GroupIcon = skillGroupIcons[group.key]}
+        {@const open = openSkillGroups[group.key] === true}
+        <section class="fx-enter ring-line/60 overflow-hidden rounded-xl ring-1" style="--fx-index: {groupIndex}">
+          <div class="hover:bg-surface-2/60 flex w-full items-center gap-2.5 px-2.5 py-2 transition-colors duration-150 ease-[var(--ease-out)]">
+            <button
+              type="button"
+              class="group/head flex min-w-0 flex-1 items-center gap-2.5 text-left"
+              aria-expanded={open}
+              onclick={() => toggleSkillGroupOpen(group.key)}
+            >
+              <span class="bg-surface-2 text-muted-foreground group-hover/head:text-primary grid size-8 shrink-0 place-items-center rounded-lg transition-colors duration-150 ease-[var(--ease-out)]">
+                <GroupIcon class="size-[18px]" strokeWidth={1.9} />
+              </span>
+              <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-foreground">{q.skillCategories[group.key]}</span>
+              <span class="bg-surface-2 text-muted-foreground shrink-0 rounded-full px-2 py-0.5 text-[10.5px] tabular">{group.enabledCount}/{group.skills.length}</span>
+              <CaretDown class="text-muted-foreground size-3.5 shrink-0 transition-transform duration-[var(--d-base)] ease-[var(--ease-out)] {open ? 'rotate-180' : ''}" />
+            </button>
+            {#if group.skills.length > 0}
+              {@render skillSwitch(group.enabledCount === group.skills.length, q.skillCategoryToggle, () => void toggleSkillGroup(group))}
+            {/if}
+          </div>
+          <div
+            class="grid transition-[grid-template-rows,opacity] duration-[var(--d-base)] ease-[var(--ease-out)] {open ? 'grid-rows-[1fr] opacity-100' : 'grid-rows-[0fr] opacity-0'}"
+            inert={!open}
+            aria-hidden={!open}
+          >
+            <div class="min-h-0 overflow-hidden">
+              {#if group.skills.length === 0}
+                <p class="text-muted-foreground px-3 pb-3 pt-1 text-[11.5px] leading-relaxed">{q.skillCustomEmpty}</p>
+              {:else}
+                <ul class="space-y-0.5 pb-1">
+                  {#each group.skills as skill (skill.id)}
+                    <li class="rounded-lg px-2.5 py-2 transition-[background-color,opacity] duration-200 ease-[var(--ease-out)] hover:bg-surface-2/50 {skill.enabled ? '' : 'opacity-50'}">
+                      <div class="flex items-center justify-between gap-2.5">
+                        <div class="min-w-0 flex-1">
+                          <p class="flex min-w-0 items-baseline gap-1.5">
+                            <span class="shrink-0 text-[13px] font-medium text-foreground">{skillDisplayName(skill)}</span>
+                            <span class="text-muted-foreground/70 min-w-0 truncate text-[11px]">{skill.hosts.join(' · ')}</span>
+                          </p>
+                          <p class="text-muted-foreground mt-0.5 line-clamp-1 text-[11.5px] leading-snug" title={skillDisplayDescription(skill)}>{skillDisplayDescription(skill)}</p>
+                        </div>
+                        <div class="flex shrink-0 items-center gap-1">
+                          {#if skill.source !== 'builtin'}
+                            <button
+                              type="button"
+                              class="hover:bg-surface-2 text-muted-foreground/70 hover:text-destructive rounded-lg p-1 transition-colors duration-150 ease-[var(--ease-out)]"
+                              aria-label={q.skillDelete}
+                              title={q.skillDelete}
+                              onclick={() => void removeSkill(skill)}
+                            >
+                              <Trash2 class="fx-icon-wiggle size-3.5" strokeWidth={1.9} />
+                            </button>
+                          {/if}
+                          {@render skillSwitch(skill.enabled, skill.enabled ? q.skillDisable : q.skillEnable, () => void toggleSkill(skill))}
+                        </div>
+                      </div>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+          </div>
+        </section>
+      {/each}
     </div>
   </Dialog.Content>
 </Dialog.Root>
@@ -336,7 +437,7 @@
 <div class="composer-shell ring-line/80 ring-1 {running ? 'is-running' : ''} {activeIntent ? 'is-intent' : ''}">
   <div class="composer-shell-input" inert={running} aria-hidden={running}>
   <PromptInput
-    class="h-full min-h-[5.75rem] rounded-none border-0 bg-transparent shadow-none ring-0"
+    class="h-full min-h-[7rem] rounded-none border-0 bg-transparent shadow-none ring-0"
     clearOnSubmit={false}
     onSubmit={handleSubmit}
   >
@@ -375,7 +476,7 @@
                             <span class="block truncate text-[10.5px] text-muted-foreground">{tabHost(tab.url)}</span>
                           </span>
                           <span class={tabSelected ? 'bg-primary text-primary-foreground flex size-4 items-center justify-center rounded-full transition-[background-color,border-color,transform] duration-150 ease-[var(--ease-out)] scale-100' : 'border-line flex size-4 items-center justify-center rounded-full border transition-[background-color,border-color,transform] duration-150 ease-[var(--ease-out)] scale-95'}>
-                            <Check class="size-2.5 transition-[opacity,transform] duration-150 ease-[var(--ease-out)] {tabSelected ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}" weight="bold" />
+                            <Check class="size-2.5 transition-[opacity,transform] duration-150 ease-[var(--ease-out)] {tabSelected ? 'scale-100 opacity-100' : 'scale-50 opacity-0'}" strokeWidth={2.2} />
                           </span>
                         </button>
                       {/each}
@@ -384,13 +485,13 @@
                 </DropdownMenu.Content>
               </DropdownMenu.Root>
             </div>
-            <button type="button" class="hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-lg p-1.5 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" aria-label={q.cancel} onclick={cancelIntent}>
-              <X class="size-3.5" />
+            <button type="button" class="group/close hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-lg p-2 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" aria-label={q.cancel} onclick={cancelIntent}>
+              <X class="size-4 transition-transform duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/close:rotate-90" />
             </button>
           </div>
         </div>
       {/if}
-      <PromptInputTextarea placeholder={activeIntent === 'research' ? q.researchPlaceholder : activeIntent === 'compare' ? q.comparePlaceholder : t.placeholder} disabled={disabled || running} bind:value={draft} class={`transition-[min-height,padding] duration-[var(--d-base)] ease-[var(--ease-out)] ${activeIntent ? 'min-h-10 px-3.5 pb-2 pt-2' : 'min-h-12 px-3.5 py-3'}`} />
+      <PromptInputTextarea placeholder={activeIntent === 'research' ? q.researchPlaceholder : activeIntent === 'compare' ? q.comparePlaceholder : t.placeholder} disabled={disabled || running} bind:value={draft} class={`text-[14px] leading-relaxed transition-[min-height,padding] duration-[var(--d-base)] ease-[var(--ease-out)] ${activeIntent ? 'min-h-11 px-4 pb-2.5 pt-2.5' : 'min-h-16 px-4 py-4'}`} />
     </PromptInputBody>
     {#if attachedNames.length > 0}
       <div class="flex flex-wrap gap-1 px-3 pb-1" transition:slide={microSlide}>
@@ -404,26 +505,26 @@
         {/each}
       </div>
     {/if}
-    <PromptInputToolbar class="flex-wrap gap-1.5 px-2.5 pb-2.5 pt-0">
+    <PromptInputToolbar class="flex-wrap gap-1.5 px-3 pb-3 pt-0">
       <PromptInputTools class="min-w-0 flex-1 flex-wrap gap-1">
         {#if onAttachFile}
           <input bind:this={fileInput} type="file" class="hidden" multiple accept=".pdf,.docx,.md,.txt,.html,.csv,.json" onchange={handleFilesPicked} />
           <button
             type="button"
-            class="hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-xl p-1.5 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
+            class="hover:bg-surface-2 text-muted-foreground hover:text-foreground rounded-xl p-2 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
             aria-label={q.attach}
             title={q.attach}
             disabled={disabled || running}
             onclick={() => fileInput?.click()}
           >
-            <Paperclip class="size-3.5" />
+            <Paperclip class="fx-icon-wiggle size-4" />
           </button>
         {/if}
         {#if !activeIntent}
           <div class="flex min-w-0 flex-wrap gap-1 overflow-hidden" transition:slide={microSlide}>
             <DropdownMenu.Root bind:open={modelPickerOpen}>
-              <DropdownMenu.Trigger class="hover:bg-surface-2 flex max-w-[155px] items-center gap-1.5 rounded-xl px-2 py-1.5 text-[12px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] {modelPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
-                <Robot class="size-3.5 shrink-0" weight="duotone" />
+              <DropdownMenu.Trigger class="hover:bg-surface-2 flex max-w-[165px] items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] {modelPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
+                <Bot class="fx-icon-draw size-4 shrink-0" strokeWidth={1.9} />
                 {#key selectedModelLabel}<span class="fx-label-swap truncate">{selectedModelLabel}</span>{/key}
                 <CaretDown class="size-3 shrink-0 opacity-60 transition-transform duration-150 ease-[var(--ease-out)] {modelPickerOpen ? 'rotate-180' : ''}" />
               </DropdownMenu.Trigger>
@@ -452,8 +553,8 @@
             </DropdownMenu.Root>
 
             <DropdownMenu.Root bind:open={reasoningPickerOpen}>
-              <DropdownMenu.Trigger disabled={missingModel} class="hover:bg-surface-2 flex items-center gap-1.5 rounded-xl px-2 py-1.5 text-[12px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] disabled:cursor-default {reasoningPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
-                <Brain class="size-3.5 shrink-0" weight="duotone" />
+              <DropdownMenu.Trigger disabled={missingModel} class="hover:bg-surface-2 flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] disabled:cursor-default {reasoningPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
+                <BrainCircuit class="fx-icon-draw size-4 shrink-0" strokeWidth={1.9} />
                 {#key `${missingModel}:${reasoningEffort}`}<span class="fx-label-swap">{reasoningLabel(reasoningEffort)}</span>{/key}
                 {#if !missingModel}<CaretDown class="size-3 shrink-0 opacity-60 transition-transform duration-150 ease-[var(--ease-out)] {reasoningPickerOpen ? 'rotate-180' : ''}" />{/if}
               </DropdownMenu.Trigger>
@@ -477,29 +578,29 @@
         submitLabel={t.submit}
         stopLabel={t.stop}
         disabled={running || submitDisabled}
-        class="size-8 rounded-xl shadow-[0_1px_2px_oklch(0_0_0_/_0.08)] transition-[transform,background-color] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
+        class="group/send size-11 rounded-full shadow-[0_1px_2px_oklch(0_0_0_/_0.08)] transition-[transform,background-color,box-shadow] duration-150 ease-[var(--ease-out)] hover:shadow-[0_4px_14px_oklch(0_0_0_/_0.14)] active:scale-[0.96]"
       >
-        <PaperPlaneTilt class="size-4" weight="fill" />
+        <Rocket class="size-5 transition-transform duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/send:-translate-y-0.5 group-hover/send:translate-x-0.5 group-hover/send:scale-110" strokeWidth={2} />
       </PromptInputSubmit>
     </PromptInputToolbar>
   </PromptInput>
   </div>
   <section class="composer-shell-running" inert={!running} aria-hidden={!running}>
     <div class="col-start-2 flex min-w-0 items-center gap-3 px-2 py-2">
-      <span class="bg-primary/10 text-primary relative flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl">
+      <span class="fx-beam bg-primary/10 text-primary relative flex size-10 shrink-0 items-center justify-center rounded-2xl shadow-[inset_0_1px_0_oklch(1_0_0_/_0.08)]">
         <span class="fx-running-pulse bg-primary/15 absolute inset-1.5 rounded-xl"></span>
-        <CursorClick class="fx-running-cursor relative size-5" weight="duotone" />
+        <MousePointerClick class="fx-running-cursor relative size-6" strokeWidth={1.9} />
       </span>
-      <p class="truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">{t.runningTitle}</p>
+      <p class="fx-shimmer-text truncate text-[15px] font-semibold tracking-[-0.01em]">{t.runningTitle}</p>
     </div>
     <button
       type="button"
-      class="bg-surface ring-line/80 hover:bg-surface-2 col-start-3 flex size-10 shrink-0 items-center justify-center justify-self-end rounded-full text-foreground ring-1 transition-[background-color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
+      class="bg-surface ring-line/80 hover:bg-[var(--danger-bg)] hover:text-danger hover:ring-danger/35 col-start-3 flex size-10 shrink-0 items-center justify-center justify-self-end rounded-full text-foreground ring-1 transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
       aria-label={t.stop}
       title={t.stop}
       onclick={() => void onStop()}
     >
-      <Square class="size-3.5" weight="fill" />
+      <Square class="size-4" fill="currentColor" strokeWidth={1.8} />
     </button>
   </section>
 </div>
