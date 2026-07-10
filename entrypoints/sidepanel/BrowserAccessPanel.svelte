@@ -13,13 +13,11 @@
 
   interface Props {
     locale: Locale;
-    spotlight?: boolean;
     notify?: Notify;
     onChanged?: (state: BrowserControlState) => void | Promise<void>;
-    onDone?: () => void | Promise<void>;
   }
 
-  let { locale, spotlight = false, notify, onChanged, onDone }: Props = $props();
+  let { locale, notify, onChanged }: Props = $props();
   let accessState: BrowserControlState = $state({ allSites: false, pageScriptConsent: false, userScriptsAvailable: false, ready: false });
   let loading = $state(true);
   let busy = $state('');
@@ -59,7 +57,6 @@
       await refresh();
       if (!granted) return;
       notify?.({ tone: 'success', icon: 'browser', text: t.saved });
-      if (accessState.ready) await onDone?.();
     } catch (nextError) {
       notify?.({ tone: 'error', icon: 'browser', text: describe(nextError) || t.failed });
     } finally {
@@ -76,7 +73,7 @@
   }
 </script>
 
-<section class="space-y-2 {spotlight ? 'fx-spotlight' : ''}">
+<section class="space-y-2">
   <header>
     <p class="text-muted-foreground text-[11px] font-medium tracking-[0.04em] uppercase">{t.title}</p>
   </header>

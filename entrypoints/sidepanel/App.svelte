@@ -182,11 +182,15 @@
 
   async function refreshBrowserControl() {
     try {
-      browserControlState = await readBrowserControlState();
-      browserControlLoaded = true;
+      applyBrowserControlState(await readBrowserControlState());
     } catch (error) {
       reportLoadError(error, 'browser');
     }
+  }
+
+  function applyBrowserControlState(state: BrowserControlState) {
+    browserControlState = state;
+    browserControlLoaded = true;
   }
 
   async function refreshProviders() {
@@ -640,7 +644,7 @@
   openShortcutSettings={openShortcutSettings}
   onExportSessionLog={currentSessionId !== null ? handleExportSessionLog : undefined}
   refreshProviders={refreshProviders}
-  refreshBrowserControl={refreshBrowserControl}
+  onBrowserControlChanged={applyBrowserControlState}
   onboarding={!hasAnyModel}
   spotlight={missingBrowserControl}
   providerSpotlight={providerSetupSpotlight}

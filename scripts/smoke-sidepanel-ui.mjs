@@ -50,8 +50,10 @@ try {
 
     await evaluate(pageCdp, clearDatabaseExpression());
     await evaluate(pageCdp, seedDatabaseExpression({ browserControlReady: false }));
+    await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     await reloadSidepanel(pageCdp);
     const browserControlExistingModelReport = await runBrowserControlExistingModelPhase(pageCdp);
+    await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
 
     await evaluate(pageCdp, clearDatabaseExpression());
     await evaluate(pageCdp, seedOpenAIApiProviderExpression());
@@ -114,6 +116,7 @@ async function trySidePanelOpen() {
 
 async function runOnboardingPhase(cdp) {
   await evaluateStable(cdp, waitForTextExpression('Permissions'));
+  const browserAccessPosition = await readBrowserAccessPosition(cdp);
   const browserControlFirst = await evaluate(cdp, `(() => {
     const text = document.body.textContent || '';
     return text.includes('Permissions') && text.includes('Website access') && text.includes('Allow User Scripts') && !document.querySelector('[data-smoke="add-api-provider"]');
@@ -122,6 +125,7 @@ async function runOnboardingPhase(cdp) {
   await completeBrowserControl(cdp, 'provider');
   await evaluateStable(cdp, waitForTextExpression('API provider'));
   const providerAfterBrowserControl = await evaluate(cdp, `(() => document.body.innerText.includes('API provider'))()`);
+  const browserAccessReturnedToTop = await waitForSettingsScrollTop(cdp);
 
   await evaluate(cdp, `(() => {
     const button = document.querySelector('[data-smoke="add-api-provider"]') || [...document.querySelectorAll('button')].find((node) => node.textContent.includes('API provider'));
@@ -162,6 +166,9 @@ async function runOnboardingPhase(cdp) {
     const composer = document.querySelector('textarea[name="message"]');
     return {
       browserControlFirst: ${JSON.stringify(browserControlFirst)},
+      browserAccessCentered: ${browserAccessPosition.centered},
+      browserAccessFullyVisible: ${browserAccessPosition.fullyVisible},
+      browserAccessReturnedToTop: ${browserAccessReturnedToTop},
       providerAfterBrowserControl: ${JSON.stringify(providerAfterBrowserControl)},
       onboardingVisibleBeforeSave: ${onboardingVisible},
       mainUiAfterBrowserControl: Boolean(composer) && !composer.disabled,
@@ -174,10 +181,14 @@ async function runOnboardingPhase(cdp) {
 
 async function runBrowserControlExistingModelPhase(cdp) {
   await evaluateStable(cdp, waitForTextExpression('Permissions'));
+  const browserAccessPosition = await readBrowserAccessPosition(cdp);
   const beforeDone = await evaluate(cdp, `(() => {
     const text = document.body.textContent || '';
     return {
       existingModelStillSeesBrowserControl: text.includes('Permissions') && text.includes('Website access') && text.includes('Allow User Scripts'),
+      smoothMotionEnabled: !matchMedia('(prefers-reduced-motion: reduce)').matches,
+      browserAccessCentered: ${browserAccessPosition.centered},
+      browserAccessFullyVisible: ${browserAccessPosition.fullyVisible},
       providerOnboardingHidden: !document.querySelector('[data-smoke="add-api-provider"]') && !document.getElementById('onboarding-api-key'),
       mainUiHiddenBeforeBrowserControl: !document.querySelector('textarea[name="message"]'),
       noCurrentSiteChoice: !text.includes('Current site') && !text.includes('Allow this site'),
@@ -188,6 +199,7 @@ async function runBrowserControlExistingModelPhase(cdp) {
   })()`);
 
   await completeBrowserControl(cdp);
+  const browserAccessReturnedToTop = await waitForSettingsScrollTop(cdp);
 
   const afterDone = await evaluate(cdp, `new Promise((resolve, reject) => {
     const readSetting = (key) => new Promise((resolveSetting, rejectSetting) => {
@@ -219,7 +231,43 @@ async function runBrowserControlExistingModelPhase(cdp) {
       }, reject);
   })`);
 
-  return { ...beforeDone, ...afterDone };
+  return { ...beforeDone, browserAccessReturnedToTop, ...afterDone };
+}
+
+async function readBrowserAccessPosition(cdp) {
+  return evaluateStable(cdp, `new Promise((resolve) => {
+    const deadline = Date.now() + 5000;
+    const read = () => {
+      const target = document.querySelector('.fx-spotlight');
+      let scroller = target?.parentElement;
+      while (scroller && getComputedStyle(scroller).overflowY !== 'auto') scroller = scroller.parentElement;
+      if (!target || !scroller) { resolve({ centered: false, fullyVisible: false }); return; }
+      const targetRect = target.getBoundingClientRect();
+      const scrollerRect = scroller.getBoundingClientRect();
+      const centerOffset = (targetRect.top + targetRect.bottom - scrollerRect.top - scrollerRect.bottom) / 2;
+      const result = {
+        centered: Math.abs(centerOffset) <= 3,
+        fullyVisible: targetRect.top >= scrollerRect.top - 1 && targetRect.bottom <= scrollerRect.bottom + 1,
+      };
+      if ((result.centered && result.fullyVisible) || Date.now() > deadline) { resolve(result); return; }
+      requestAnimationFrame(read);
+    };
+    read();
+  })`);
+}
+
+async function waitForSettingsScrollTop(cdp) {
+  return evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const check = () => {
+      const dialog = document.querySelector('[data-slot="dialog-content"]');
+      const scroller = [...(dialog?.querySelectorAll('div') || [])].find((node) => getComputedStyle(node).overflowY === 'auto');
+      if (!dialog || (scroller && scroller.scrollTop <= 1)) { resolve(true); return; }
+      if (Date.now() > deadline) { reject(new Error('settings did not return to the top')); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  })`);
 }
 
 async function runProviderSettingsPhase(cdp) {
