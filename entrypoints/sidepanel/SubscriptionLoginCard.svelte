@@ -29,6 +29,7 @@
 
   let t = $derived(messages[locale].provider);
   let copy = $derived(subscriptionCopy(locale, vendor.id));
+  let modelsExpanded = $state(false);
   let busy = $state<'login' | 'refresh' | 'signout' | null>(null);
   let awaitingCode = $state(false);
   let manualCode = $state('');
@@ -169,13 +170,19 @@
       {#if models.all.length > 0}
         <p class="text-muted-foreground flex items-center gap-1.5 text-[12px] font-medium"><Sparkle class="size-3.5" />{t.models}</p>
         <div class="flex flex-wrap gap-1.5">
-          {#each models.preview as model (model.id)}
+          {#each modelsExpanded ? models.all : models.preview as model (model.id)}
             <span class="bg-surface-2/70 text-foreground ring-line/60 inline-flex max-w-full items-center rounded-xl px-2.5 py-1 text-[12px] ring-1">
               <span class="truncate">{model.displayName ?? model.name}</span>
             </span>
           {/each}
           {#if models.all.length > models.preview.length}
-            <span class="text-muted-foreground bg-surface-2/50 ring-line/50 inline-flex items-center rounded-xl px-2.5 py-1 text-[12px] tabular-nums ring-1">+{models.all.length - models.preview.length}</span>
+            <button
+              type="button"
+              class="text-muted-foreground bg-surface-2/50 ring-line/50 hover:bg-surface-2 hover:text-foreground inline-flex items-center rounded-xl px-2.5 py-1 text-[12px] tabular-nums ring-1 transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]"
+              aria-expanded={modelsExpanded}
+              title={modelsExpanded ? t.showFewerModels : t.showAllModels(models.all.length - models.preview.length)}
+              onclick={() => (modelsExpanded = !modelsExpanded)}
+            >{modelsExpanded ? t.showFewerModels : `+${models.all.length - models.preview.length}…`}</button>
           {/if}
         </div>
       {:else}

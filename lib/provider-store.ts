@@ -40,8 +40,32 @@ export async function listProvidersWithModels(): Promise<ProviderWithModels[]> {
   return providers.map((provider) => ({
     ...provider,
     hasCredential: credentialProviderIds.has(provider.id),
-    models: allModels.filter((model) => model.providerId === provider.id),
+    models: sortModelsForDisplay(allModels.filter((model) => model.providerId === provider.id)),
   }));
+}
+
+/** Newest generation first: compare the first version number in the name
+ * (gpt-5.6-sol → 5.6) descending, then vendor priority, then stored order.
+ * Vendor priority alone is unreliable — OpenAI still ranks gpt-5.5 above 5.6. */
+export function sortModelsForDisplay<T extends { name: string; priority?: number }>(models: T[]): T[] {
+  return [...models].sort((left, right) =>
+    compareVersionDesc(modelNameVersion(left.name), modelNameVersion(right.name)) ||
+    (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+function modelNameVersion(name: string): number[] {
+  const match = /\d+(?:\.\d+)*/.exec(name);
+  return match ? match[0].split('.').map(Number) : [];
+}
+
+function compareVersionDesc(left: number[], right: number[]) {
+  const length = Math.max(left.length, right.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (right[index] ?? 0) - (left[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 export async function readProviderCredential(providerId: number): Promise<ProviderCredential | undefined> {

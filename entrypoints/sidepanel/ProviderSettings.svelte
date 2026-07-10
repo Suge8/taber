@@ -33,7 +33,7 @@
     selectOpenAIApiModels,
     type OpenAIApiModelCatalogSnapshot,
   } from '$lib/openai-api-provider.ts';
-  import { builtinProviderPresets, findPresetModel, mergeProviderCatalog, readCachedModelCatalog, refreshModelCatalog, type ProviderPreset } from '$lib/model-catalog.ts';
+  import { builtinProviderPresets, findPresetModel, isModelCatalogStale, mergeProviderCatalog, readCachedModelCatalog, refreshModelCatalog, type ProviderPreset } from '$lib/model-catalog.ts';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
   import { showManualContextWindowInput } from '$lib/provider-settings-policy.ts';
   import ProviderSecretInput from './ProviderSecretInput.svelte';
@@ -132,6 +132,13 @@
       const [list, catalog] = await Promise.all([listProvidersWithModels(), readCachedModelCatalog()]);
       providerPresets = mergeProviderCatalog(catalog);
       providers = list;
+      // Keep API-side model specs aligned automatically: refresh the models.dev
+      // catalog in the background once it goes stale (new models, context sizes).
+      if (isModelCatalogStale(catalog)) {
+        void refreshModelCatalog()
+          .then((fresh) => { providerPresets = mergeProviderCatalog(fresh); })
+          .catch(() => undefined);
+      }
       await onChanged?.();
     } catch (error) {
       pushError(error);

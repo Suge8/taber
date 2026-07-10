@@ -30,6 +30,11 @@ export const builtinProviderPresets: ProviderPreset[] = [
     name: 'OpenAI',
     baseURL: 'https://api.openai.com/v1',
     models: [
+      // GPT-5.6 family (GA 2026-07-09): context/output verified via provider
+      // metadata (1,050,000 in / 128,000 out); Sol = flagship, Terra = balanced, Luna = fast.
+      { name: 'gpt-5.6-sol', contextWindowTokens: 1050000 },
+      { name: 'gpt-5.6-terra', contextWindowTokens: 1050000 },
+      { name: 'gpt-5.6-luna', contextWindowTokens: 1050000 },
       { name: 'gpt-5.5', contextWindowTokens: 1000000 },
       { name: 'gpt-5.4-mini', contextWindowTokens: 1000000 },
       { name: 'gpt-5.4-nano', contextWindowTokens: 1000000 },
@@ -40,6 +45,7 @@ export const builtinProviderPresets: ProviderPreset[] = [
     name: 'OpenRouter',
     baseURL: 'https://openrouter.ai/api/v1',
     models: [
+      { name: 'openai/gpt-5.6-sol', contextWindowTokens: 1050000 },
       { name: 'openai/gpt-5.5', contextWindowTokens: 1000000 },
       { name: 'anthropic/claude-sonnet-4.6', contextWindowTokens: 200000 },
       { name: 'google/gemini-3.1-pro-preview', contextWindowTokens: 1000000 },
@@ -121,6 +127,14 @@ export const builtinProviderPresets: ProviderPreset[] = [
     models: [],
   },
 ];
+
+/** models.dev is the live source for API-side model specs; refresh weekly so
+ * new models and context windows arrive without a manual catalog refresh. */
+export const MODEL_CATALOG_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export function isModelCatalogStale(catalog: CachedModelCatalog | null | undefined, now = Date.now()) {
+  return !catalog || now - catalog.fetchedAt > MODEL_CATALOG_STALE_MS;
+}
 
 export async function readCachedModelCatalog() {
   const setting = await database.settings.get(modelCatalogSettingKey);

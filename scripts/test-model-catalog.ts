@@ -8,8 +8,8 @@ await initializeDatabase();
 await database.delete();
 await initializeDatabase();
 
-assert.equal(builtinProviderPresets.find((provider) => provider.id === 'openai')?.models[0]?.name, 'gpt-5.5');
-assert.equal(builtinProviderPresets.find((provider) => provider.id === 'openrouter')?.models[0]?.name, 'openai/gpt-5.5');
+assert.equal(builtinProviderPresets.find((provider) => provider.id === 'openai')?.models[0]?.name, 'gpt-5.6-sol');
+assert.equal(builtinProviderPresets.find((provider) => provider.id === 'openrouter')?.models[0]?.name, 'openai/gpt-5.6-sol');
 assert.ok(builtinProviderPresets.some((provider) => provider.id === 'kimi-global'));
 assert.ok(builtinProviderPresets.some((provider) => provider.id === 'kimi-cn'));
 assert.ok(builtinProviderPresets.some((provider) => provider.id === 'minimax'));

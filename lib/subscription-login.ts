@@ -12,7 +12,7 @@ import {
   refreshCodexModels,
 } from './codex-provider.ts';
 import { signOutOpenAICodex, signOutXaiSub } from './provider-config-flow.ts';
-import type { ProviderWithModels } from './provider-store.ts';
+import { sortModelsForDisplay, type ProviderWithModels } from './provider-store.ts';
 import type { Locale } from './sidepanel-i18n.ts';
 import { messages } from './sidepanel-i18n.ts';
 import { loginXaiSub } from './xai-oauth.ts';
@@ -106,7 +106,7 @@ export function mapOAuthLoginError(error: unknown, copy: SubscriptionCopy) {
 }
 
 export function visibleSubscriptionModels(provider?: ProviderWithModels) {
-  const models = (provider?.models ?? []).filter((model) => !model.unavailable && model.visibility !== 'hide');
+  const models = sortModelsForDisplay((provider?.models ?? []).filter((model) => !model.unavailable && model.visibility !== 'hide'));
   return {
     all: models,
     preview: models.slice(0, SUBSCRIPTION_MODEL_PREVIEW),
