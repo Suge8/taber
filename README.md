@@ -20,6 +20,18 @@
   <a href="https://github.com/Suge8/taber/releases"><img alt="Release" src="https://img.shields.io/github/v/release/Suge8/taber"></a>
 </p>
 
+<p align="center">
+  <a href="docs/assets/readme/empty-state.webp"><img src="docs/assets/readme/empty-state.webp" width="44%" alt="Taber idle side panel"></a>
+  &nbsp;
+  <a href="docs/assets/readme/task-result.webp"><img src="docs/assets/readme/task-result.webp" width="44%" alt="Taber completed a browser task with inspectable steps"></a>
+</p>
+<p align="center"><sub>空闲侧边栏与任务结果 · Idle side panel and completed task</sub></p>
+
+<p align="center">
+  <a href="docs/assets/readme/site-skills.webp"><img src="docs/assets/readme/site-skills.webp" width="56%" alt="Taber site skills grouped by workflow"></a>
+</p>
+<p align="center"><sub>按场景管理的站点技能 · Site skills grouped by workflow</sub></p>
+
 ---
 
 ## 中文
