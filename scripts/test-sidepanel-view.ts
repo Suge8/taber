@@ -285,8 +285,6 @@ assert.equal(targetSources[0].tabId, 22);
 const targetTimeline = deriveTimeline([...targetChangedEvents]);
 assert.equal(targetTimeline.length, 1);
 assert.equal(targetTimeline[0].kind, 'message');
-assert.equal(sidepanelMessages.en.sources.viewSources, 'Sources');
-assert.equal(sidepanelMessages.zh.sources.viewSources, '来源');
 assert.equal(sidepanelMessages.en.sources.lastPage, 'Last page');
 assert.equal(sidepanelMessages.zh.sources.lastPage, '上次页面');
 assert.equal(sidepanelMessages.en.sources.switchToCurrentTab, 'Use current tab');

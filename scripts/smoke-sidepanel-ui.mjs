@@ -71,7 +71,9 @@ try {
     await reloadSidepanel(pageCdp);
     await waitForReady(pageCdp);
     await evaluateStable(pageCdp, waitForTextExpression('Summarize this page'));
+    await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     const idleSourcesReport = await runIdleSourcesPhase(pageCdp);
+    await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     const recoveryReport = await evaluateStable(pageCdp, recoveryReportExpression());
     const i18nReport = await runI18nPhase(pageCdp);
     await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
@@ -423,6 +425,14 @@ async function runTargetSwitchPhase(cdp) {
 
 async function runIdleSourcesPhase(cdp) {
   await evaluateStable(cdp, waitForTextExpression('Last page'));
+  const initial = await readSourceBarStyle(cdp);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: initial.triggerCenterX, y: initial.triggerCenterY });
+  await waitForSourceBarMotion(cdp);
+  const hovered = await readSourceBarStyle(cdp);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 0, y: 0 });
+  await waitForSourceBarMotion(cdp);
+  const exited = await readSourceBarStyle(cdp);
+
   return evaluateStable(cdp, `new Promise((resolve, reject) => {
     const trigger = document.querySelector('[data-smoke="controlled-target"]');
     if (!trigger) {
@@ -441,11 +451,44 @@ async function runIdleSourcesPhase(cdp) {
         idleSourcesTriggerVisible: true,
         idleShowsLastPage: triggerText.includes('Last page') && !triggerText.includes('Controlled page'),
         idleSwitchHidden: !document.querySelector('[data-smoke="switch-target-current-tab"]') && !text.includes('Use current tab'),
-        idleSourcesLabel: text.includes('Sources') && !text.includes('View sources'),
+        idleSourcesLabelHidden: !text.includes('Sources') && !text.includes('View sources'),
         idleOpenLastPage: text.includes('Open last page'),
+        sourceHoverFillsCard: ${JSON.stringify(initial.cardBackground)} !== ${JSON.stringify(hovered.cardBackground)} && ${JSON.stringify(hovered.triggerBackground)} === 'rgba(0, 0, 0, 0)',
+        sourceHoverAnimatesIcon: ${JSON.stringify(hovered.iconMotion)} !== ${JSON.stringify(initial.iconMotion)},
+        sourceHoverTransitionIsSmooth: ${JSON.stringify(initial.cardTransitionProperties)}.includes('background-color') && ${initial.cardTransitionMs} >= 180,
+        sourceHoverExitRestoresCard: ${JSON.stringify(exited.cardBackground)} === ${JSON.stringify(initial.cardBackground)},
       });
     }, 50);
   })`);
+}
+
+async function readSourceBarStyle(cdp) {
+  return evaluate(cdp, `(() => {
+    const card = document.querySelector('[data-source-card]');
+    const trigger = document.querySelector('[data-smoke="controlled-target"]');
+    const icon = trigger?.querySelector('[data-source-icon]');
+    if (!card || !trigger || !icon) throw new Error('source bar styling hooks not found');
+    const cardStyle = getComputedStyle(card);
+    const triggerStyle = getComputedStyle(trigger);
+    const iconStyle = getComputedStyle(icon);
+    const triggerRect = trigger.getBoundingClientRect();
+    return {
+      cardBackground: cardStyle.backgroundColor,
+      cardTransitionProperties: cardStyle.transitionProperty,
+      cardTransitionMs: Math.max(...cardStyle.transitionDuration.split(',').map((value) => Number.parseFloat(value) * (value.includes('ms') ? 1 : 1000))),
+      triggerBackground: triggerStyle.backgroundColor,
+      triggerCenterX: triggerRect.left + triggerRect.width / 2,
+      triggerCenterY: triggerRect.top + triggerRect.height / 2,
+      iconMotion: [iconStyle.transform, iconStyle.translate, iconStyle.scale].join('|'),
+    };
+  })()`);
+}
+
+async function waitForSourceBarMotion(cdp) {
+  return evaluateStable(cdp, `new Promise((resolve) => requestAnimationFrame(() => {
+    const card = document.querySelector('[data-source-card]');
+    Promise.allSettled(card ? card.getAnimations({ subtree: true }).map((animation) => animation.finished) : []).then(() => resolve(true));
+  }))`);
 }
 
 async function runI18nPhase(cdp) {

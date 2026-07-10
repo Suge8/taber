@@ -69,13 +69,13 @@
 
 {#if displaySource || imagePreview}
   <section class="fx-enter shrink-0 px-3 pb-0.5 pt-1.5">
-    <div class="bg-surface flex min-h-9 items-center gap-2 rounded-2xl px-2.5 py-1.5 text-[12px] ring-1 transition-[box-shadow] duration-300 {running && target ? 'ring-primary/20 shadow-[inset_0_1px_0_oklch(1_0_0_/_0.06),0_8px_28px_oklch(0_0_0_/_0.06)]' : 'ring-line/70 shadow-[0_8px_24px_oklch(0_0_0_/_0.035)]'}">
+    <div data-source-card class="bg-surface flex min-h-9 items-center gap-2 rounded-2xl px-2.5 py-1.5 text-[12px] ring-1 transition-[background-color,box-shadow] duration-[var(--d-base)] ease-[var(--ease-out)] {running && target ? 'ring-primary/20 shadow-[inset_0_1px_0_oklch(1_0_0_/_0.06),0_8px_28px_oklch(0_0_0_/_0.06)]' : 'ring-line/70 shadow-[0_8px_24px_oklch(0_0_0_/_0.035)]'}">
       {#if displaySource}
         <DropdownMenu.Root>
-          <DropdownMenu.Trigger class="hover:bg-surface-2 flex min-w-0 flex-1 items-center gap-2 rounded-xl px-1.5 py-1 text-left transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" aria-label={target ? targetDetailsLabel : t.title} data-smoke="controlled-target">
-            <span class="relative shrink-0">
-              <span class="bg-surface-2 ring-line/60 relative flex size-6 items-center justify-center overflow-hidden rounded-full shadow-[inset_0_1px_0_oklch(1_0_0_/_0.06)] ring-1">
-                <GlobeSimple class="text-muted-foreground size-3.5" />
+          <DropdownMenu.Trigger class="group/source flex min-w-0 flex-1 items-center gap-2 rounded-xl px-1.5 py-1 text-left transition-transform duration-[var(--d-base)] ease-[var(--ease-out)] active:scale-[0.96]" aria-label={target ? targetDetailsLabel : t.title} data-source-trigger data-smoke="controlled-target">
+            <span data-source-icon class="relative shrink-0 transition-transform duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/source:-translate-y-px group-hover/source:scale-[1.04]">
+              <span class="bg-surface-2 ring-line/60 relative flex size-6 items-center justify-center overflow-hidden rounded-full shadow-[inset_0_1px_0_oklch(1_0_0_/_0.06)] ring-1 transition-[background-color,box-shadow] duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/source:bg-surface">
+                <GlobeSimple class="text-muted-foreground size-3.5 transition-colors duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/source:text-foreground" />
                 {#if displaySource.faviconUrl}
                   <img
                     src={displaySource.faviconUrl}
@@ -94,10 +94,10 @@
             </span>
             <span class="min-w-0 flex-1">
               <span class="block truncate text-foreground/90">{#if running && target}<span class="fx-shimmer-text font-semibold">{primaryLabel}</span>{:else}{primaryLabel}{/if} · {displaySource.label}</span>
-              <span class="block truncate text-[10.5px] text-muted-foreground">{sourceSubtitle(displaySource)}</span>
+              <span class="block truncate text-[10.5px] text-muted-foreground transition-colors duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/source:text-foreground/70">{sourceSubtitle(displaySource)}</span>
             </span>
-            {#if otherSources.length > 0}<span class="text-muted-foreground shrink-0">{t.sourceCount(otherSources.length)}</span>{/if}
-            {#if imagePreview}<span class="text-muted-foreground shrink-0">{t.imageCount(1)}</span>{/if}
+            {#if otherSources.length > 0}<span class="text-muted-foreground shrink-0 transition-colors duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/source:text-foreground/70">{t.sourceCount(otherSources.length)}</span>{/if}
+            {#if imagePreview}<span class="text-muted-foreground shrink-0 transition-colors duration-[var(--d-base)] ease-[var(--ease-out)] group-hover/source:text-foreground/70">{t.imageCount(1)}</span>{/if}
           </DropdownMenu.Trigger>
           <DropdownMenu.Content side="top" align="start" sideOffset={8} class="w-[min(22rem,calc(100vw-2rem))] rounded-2xl p-2 shadow-[0_18px_50px_oklch(0_0_0_/_0.12)]">
             {#if target}
@@ -133,29 +133,28 @@
 
             {#if otherSources.length > 0}
               {#if target}<div class="bg-line/70 my-1.5 h-px"></div>{/if}
-              <DropdownMenu.Label class="text-[11px] text-muted-foreground">{t.viewSources}</DropdownMenu.Label>
-            {#each otherSources as source (source.url)}
-              <DropdownMenu.Item
-                class="gap-2 rounded-xl px-2 py-2 text-xs"
-                onclick={() => openSource(source)}
-              >
-                <span class="bg-surface-2 ring-line/60 relative flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
-                  <ArrowSquareOut class="size-3 text-muted-foreground" />
-                  {#if source.faviconUrl}
-                    <img
-                      src={source.faviconUrl}
-                      alt="{source.domain || source.label} favicon"
-                      class="absolute inset-1 size-4 rounded-[4px] object-contain"
-                      onerror={hideBrokenImage}
-                    />
-                  {/if}
-                </span>
-                <span class="min-w-0 flex-1">
-                  <span class="block truncate text-foreground">{source.label}</span>
-                  <span class="block truncate text-muted-foreground">{source.domain || source.url}</span>
-                </span>
-              </DropdownMenu.Item>
-            {/each}
+              {#each otherSources as source (source.url)}
+                <DropdownMenu.Item
+                  class="gap-2 rounded-xl px-2 py-2 text-xs"
+                  onclick={() => openSource(source)}
+                >
+                  <span class="bg-surface-2 ring-line/60 relative flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
+                    <ArrowSquareOut class="size-3 text-muted-foreground" />
+                    {#if source.faviconUrl}
+                      <img
+                        src={source.faviconUrl}
+                        alt="{source.domain || source.label} favicon"
+                        class="absolute inset-1 size-4 rounded-[4px] object-contain"
+                        onerror={hideBrokenImage}
+                      />
+                    {/if}
+                  </span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-foreground">{source.label}</span>
+                    <span class="block truncate text-muted-foreground">{source.domain || source.url}</span>
+                  </span>
+                </DropdownMenu.Item>
+              {/each}
             {/if}
           </DropdownMenu.Content>
         </DropdownMenu.Root>
@@ -220,3 +219,16 @@
     </div>
   </Dialog.Content>
 </Dialog.Root>
+
+<style>
+  [data-source-card]:has(:global([data-source-trigger][data-state='open'])),
+  [data-source-card]:has(:global([data-source-trigger]:focus-visible)) {
+    background-color: var(--surface-2);
+  }
+
+  @media (hover: hover) {
+    [data-source-card]:has(:global([data-source-trigger]:hover)) {
+      background-color: var(--surface-2);
+    }
+  }
+</style>
