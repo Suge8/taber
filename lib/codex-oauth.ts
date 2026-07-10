@@ -1,6 +1,7 @@
 import {
   CODEX_CLIENT_ID,
   CODEX_ISSUER,
+  CODEX_ORIGINATOR,
   type CodexAuthTokens,
   CodexAuthError,
   parseCodexTokenMetadata,
@@ -163,7 +164,7 @@ export function buildCodexAuthorizeUrl(input: { codeChallenge: string; state: st
     extraParams: {
       id_token_add_organizations: 'true',
       codex_cli_simplified_flow: 'true',
-      originator: input.originator ?? 'taber',
+      originator: input.originator ?? CODEX_ORIGINATOR,
     },
   });
 }

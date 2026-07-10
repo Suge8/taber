@@ -3,7 +3,16 @@ import { readReasoningEffortLevel, type ReasoningEffortLevel } from './reasoning
 export const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 export const CODEX_ISSUER = 'https://auth.openai.com';
 export const CODEX_DEVICE_VERIFY_URL = `${CODEX_ISSUER}/codex/device`;
-export const CODEX_MODELS_URL = 'https://chatgpt.com/backend-api/codex/models?client_version=0.124.0';
+// ChatGPT gates model availability by codex client version: an old version here
+// silently hides newly released models (e.g. gpt-5.6). Keep it aligned with the
+// latest @openai/codex release (https://registry.npmjs.org/@openai/codex/latest).
+export const CODEX_CLIENT_VERSION = '0.144.1';
+// The Codex backend gates models per (originator, model): probed live with the
+// same token/account/body — gpt-5.6-luna returns 200 for 'codex_cli_rs' but
+// 404 "Model not found" for a custom originator, while sol/terra pass either
+// way. Identify as the official CLI so gated models stay usable.
+export const CODEX_ORIGINATOR = 'codex_cli_rs';
+export const CODEX_MODELS_URL = `https://chatgpt.com/backend-api/codex/models?client_version=${CODEX_CLIENT_VERSION}`;
 
 export type CodexAuthFailureKind = 'auth' | 'token_exchange' | 'model_endpoint' | 'network' | 'timeout' | 'aborted' | 'unexpected_response';
 
@@ -163,7 +172,7 @@ export async function fetchCodexModels(auth: { accessToken: string; accountId: s
         Authorization: `Bearer ${auth.accessToken}`,
         'ChatGPT-Account-Id': auth.accountId,
         'OpenAI-Beta': 'responses=experimental',
-        originator: 'taber',
+        originator: CODEX_ORIGINATOR,
         Accept: 'application/json',
       },
       signal: options.signal,

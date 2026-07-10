@@ -27,7 +27,7 @@ export function openAIProviderOptions(reasoningEffort: ReasoningEffort, supporte
     openai: {
       store: false,
       parallelToolCalls: true,
-      ...(supportsReasoning ? { reasoningSummary: 'auto' } : {}),
+      ...(supportsReasoning ? { reasoningSummary: 'detailed' } : {}),
       ...(reasoningEffort === 'default' ? {} : { reasoningEffort }),
     },
   };

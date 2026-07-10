@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import {
   CODEX_CLIENT_ID,
+  CODEX_CLIENT_VERSION,
   CODEX_DEVICE_VERIFY_URL,
   CODEX_MODELS_URL,
+  CODEX_ORIGINATOR,
   CodexAuthError,
   exchangeCodexAuthorizationCode,
   fetchCodexModels,
@@ -25,6 +27,9 @@ import {
   type CodexOAuthTabs,
   type CodexOAuthWebNavigation,
 } from '../lib/codex-oauth.ts';
+
+assert.equal(CODEX_CLIENT_VERSION, '0.144.1');
+assert.equal(new URL(CODEX_MODELS_URL).searchParams.get('client_version'), CODEX_CLIENT_VERSION);
 
 await testRequestDeviceCode();
 await testPollDeviceCode();
@@ -307,7 +312,7 @@ async function testWaitForIdentityRedirect() {
 
 async function testWaitForOAuthRedirect() {
   const url = buildCodexAuthorizeUrl({ codeChallenge: 'challenge', state: 'state-1' });
-  assert.equal(new URL(url).searchParams.get('originator'), 'taber');
+  assert.equal(new URL(url).searchParams.get('originator'), CODEX_ORIGINATOR);
   const fakeTabs = createFakeTabs();
   const redirect = waitForCodexOAuthRedirect(url, { tabs: fakeTabs.tabs, timeoutMs: 1000 });
   await fakeTabs.created;
@@ -358,7 +363,7 @@ async function testFetchCodexModels() {
   assert.equal(capturedHeaders!.get('authorization'), 'Bearer access-secret');
   assert.equal(capturedHeaders!.get('chatgpt-account-id'), 'account-1');
   assert.equal(capturedHeaders!.get('openai-beta'), 'responses=experimental');
-  assert.equal(capturedHeaders!.get('originator'), 'taber');
+  assert.equal(capturedHeaders!.get('originator'), CODEX_ORIGINATOR);
 }
 
 function testParseCodexModels() {

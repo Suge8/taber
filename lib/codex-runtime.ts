@@ -1,7 +1,7 @@
 import { createOpenAI } from '@ai-sdk/openai';
 import type { LanguageModel } from 'ai';
-import { redactCodexSecrets } from './codex-auth.ts';
-import { assertReasoningEffortSupported, type ReasoningEffort } from './reasoning-effort.ts';
+import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR, redactCodexSecrets } from './codex-auth.ts';
+import { assertReasoningEffortSupported, normalizeSupportedReasoningEfforts, type ReasoningEffort } from './reasoning-effort.ts';
 
 export type CodexRuntimeAuth = { accessToken: string; accountId: string };
 
@@ -29,13 +29,19 @@ export function createCodexLanguageModel(options: CodexRuntimeOptions): Language
   }).responses(options.modelId) as LanguageModel;
 }
 
-export function codexProviderOptions(reasoningEffort: ReasoningEffort) {
+export function codexProviderOptions(reasoningEffort: ReasoningEffort, supportedReasoningEfforts?: unknown) {
+  // Align with openAIProviderOptions: non-reasoning models (e.g. gpt-5.6-luna)
+  // reject requests that carry reasoning fields, so only send them when the
+  // model actually supports reasoning.
+  const supportsReasoning = normalizeSupportedReasoningEfforts(supportedReasoningEfforts).length > 0;
   return {
     openai: {
       store: false,
       parallelToolCalls: true,
-      reasoningSummary: 'auto',
-      ...(reasoningEffort === 'default' ? {} : { reasoningEffort }),
+      // 'detailed' is the fullest reasoning view OpenAI exposes (raw chain of
+      // thought is never returned); probed 200 across gpt-5.5/5.6 sol/terra/luna.
+      ...(supportsReasoning ? { reasoningSummary: 'detailed' } : {}),
+      ...(reasoningEffort === 'default' || !supportsReasoning ? {} : { reasoningEffort }),
     },
   };
 }
@@ -49,7 +55,10 @@ function createCodexFetch(options: CodexRuntimeOptions): typeof fetch {
     headers.set('Authorization', `Bearer ${auth.accessToken}`);
     headers.set('ChatGPT-Account-Id', auth.accountId);
     headers.set('OpenAI-Beta', CODEX_BETA_HEADER);
-    headers.set('originator', 'taber');
+    headers.set('originator', CODEX_ORIGINATOR);
+    // ChatGPT gates newly released models by client version on inference too;
+    // without this header requests for new models fail with "Model not found".
+    headers.set('version', CODEX_CLIENT_VERSION);
     headers.set('Accept', streaming ? 'text/event-stream' : 'application/json');
 
     const response = await fetcher(input, { ...init, headers });

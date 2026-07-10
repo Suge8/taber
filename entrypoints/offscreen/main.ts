@@ -17,6 +17,7 @@ import {
   type Provider,
 } from '../../lib/db';
 import { compactContext, contextLimit, needsCompaction } from '../../lib/context-compaction';
+import { createDeltaCoalescer } from '../../lib/event-coalescer';
 import { codexProviderOptions, createCodexLanguageModel } from '../../lib/codex-runtime';
 import { readFreshCodexTokens } from '../../lib/codex-provider';
 import { deriveModelMessages, estimateModelPromptTokens } from '../../lib/model-context';
@@ -275,7 +276,7 @@ async function createLanguageModel(providerRecord: Provider, modelRecord: Model,
 }
 
 function languageModelProviderOptions(kind: Provider['kind'], modelRecord: Model, reasoningEffort: ReasoningEffortSetting) {
-  if (kind === 'openaiCodex') return codexProviderOptions(reasoningEffort);
+  if (kind === 'openaiCodex') return codexProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts);
   if (kind === 'xaiSub') return xaiProviderOptions(reasoningEffort);
   if (kind === 'openaiApiKey') return openAIProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);
   return reasoningProviderOptionsForModel(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);

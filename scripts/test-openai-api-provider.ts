@@ -142,7 +142,7 @@ async function testOpenAIApiRuntimeUsesResponsesAndReasoningMetadata() {
   assert.equal(capturedBody.model, 'gpt-5.4');
   assert.equal(capturedBody.store, false);
   assert.equal(capturedBody.parallel_tool_calls, true);
-  assert.deepEqual(capturedBody.reasoning, { effort: 'xhigh', summary: 'auto' });
+  assert.deepEqual(capturedBody.reasoning, { effort: 'xhigh', summary: 'detailed' });
 }
 
 async function openAIFetch(input: RequestInfo | URL) {

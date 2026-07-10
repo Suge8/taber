@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import 'fake-indexeddb/auto';
 import { codexProviderOptions, createCodexLanguageModel } from '../lib/codex-runtime.ts';
+import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR } from '../lib/codex-auth.ts';
+
+// Non-reasoning models (e.g. gpt-5.6-luna) reject requests carrying reasoning
+// fields; options must omit them unless the model supports reasoning.
+assert.deepEqual(codexProviderOptions('default', []), { openai: { store: false, parallelToolCalls: true } });
+assert.deepEqual(codexProviderOptions('high', []), { openai: { store: false, parallelToolCalls: true } });
+assert.deepEqual(codexProviderOptions('high', ['high']), { openai: { store: false, parallelToolCalls: true, reasoningSummary: 'detailed', reasoningEffort: 'high' } });
+assert.deepEqual(codexProviderOptions('default', ['high']), { openai: { store: false, parallelToolCalls: true, reasoningSummary: 'detailed' } });
 import { connectOpenAICodex } from '../lib/codex-provider.ts';
 import { database, initializeDatabase } from '../lib/db.ts';
 import { readSelectedConfiguredModel, signOutOpenAICodex } from '../lib/provider-config-flow.ts';
@@ -49,7 +57,7 @@ async function testStreamSendsResponsesRequest() {
       { role: 'user', content: [{ type: 'text', text: 'Open the current tab' }] },
     ],
     tools: [{ type: 'function', name: 'navigate', description: 'Navigate tabs', inputSchema: { type: 'object' } }],
-    providerOptions: codexProviderOptions('high'),
+    providerOptions: codexProviderOptions('high', ['low', 'medium', 'high']),
   });
   const parts = await readStream(result.stream);
 
@@ -57,13 +65,16 @@ async function testStreamSendsResponsesRequest() {
   assert.equal(capturedHeaders.get('authorization'), 'Bearer access-secret');
   assert.equal(capturedHeaders.get('chatgpt-account-id'), 'account-secret');
   assert.equal(capturedHeaders.get('openai-beta'), 'responses=experimental');
-  assert.equal(capturedHeaders.get('originator'), 'taber');
+  assert.equal(capturedHeaders.get('originator'), CODEX_ORIGINATOR);
+  // ChatGPT gates newly released models by client version on inference; without
+  // this header requests for new models fail with "Model not found".
+  assert.equal(capturedHeaders.get('version'), CODEX_CLIENT_VERSION);
   assert.equal(capturedHeaders.get('accept'), 'text/event-stream');
   assert.equal(capturedBody.model, 'gpt-5.5');
   assert.equal(capturedBody.store, false);
   assert.equal(capturedBody.stream, true);
   assert.equal(capturedBody.parallel_tool_calls, true);
-  assert.deepEqual(capturedBody.reasoning, { effort: 'high', summary: 'auto' });
+  assert.deepEqual(capturedBody.reasoning, { effort: 'high', summary: 'detailed' });
   assert.deepEqual(capturedBody.tools, [{ type: 'function', name: 'navigate', description: 'Navigate tabs', parameters: { type: 'object' } }]);
   assert.deepEqual(capturedBody.input, [
     { role: 'developer', content: 'System prompt' },
@@ -93,10 +104,10 @@ async function testTerminalEventClosesHangingStream() {
 
   const result = await model.doStream({
     prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-    providerOptions: codexProviderOptions('default'),
+    providerOptions: codexProviderOptions('default', ['medium']),
   });
   await readStream(result.stream);
-  assert.deepEqual(capturedBody.reasoning, { summary: 'auto' });
+  assert.deepEqual(capturedBody.reasoning, { summary: 'detailed' });
   assert.equal(cancelled, true);
 }
 
