@@ -118,7 +118,6 @@ async function stopTask() {
 async function switchTarget(message: Record<string, unknown>) {
   if (!runningTask) throw new Error('No running Taber task');
   const targetTab = readTargetTab(message.targetTab, message.targetTabId, readWindowId(message.windowId) ?? runningTask.windowId);
-  if (!isOperableTab(targetTab)) throw new Error(`Target tab is not operable: ${targetTab.url ?? targetTab.id}`);
   if (targetTab.id === runningTask.targetTabId) return { changed: false, taskId: runningTask.taskId, targetTab };
   await updateRunningTarget(runningTask.sessionId, runningTask.taskId, { toTabId: targetTab.id, reason: readString(message.reason) || 'userCurrentTab', tab: targetTab });
   return { changed: true, taskId: runningTask.taskId, targetTab };
@@ -134,12 +133,13 @@ function handleTargetTabUpdated(message: Record<string, unknown>) {
   if (!runningTask) return;
   const tab = readTargetTab(message.tab, undefined, runningTask.windowId);
   if (tab.id !== runningTask.targetTabId) return;
+  runningTask.targetTab = tab;
+  // Non-operable pages no longer fail the task: page tools report recoverable
+  // errors and navigate.open can steer the tab back to a real site.
   if (!isOperableTab(tab)) {
     hideTargetOverlay(tab.id);
-    void failRunningTask(runningTask.taskId, `Target tab is not operable: ${tab.url ?? tab.id}`);
     return;
   }
-  runningTask.targetTab = tab;
   showTargetOverlay(tab.id);
 }
 

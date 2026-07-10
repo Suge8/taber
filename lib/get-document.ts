@@ -67,9 +67,6 @@ export const getDocumentInputJsonSchema = {
   },
 } as const;
 
-const currentPageInputKeys = new Set(['source', 'mode', 'tabId', 'includeTables']);
-const urlInputKeys = new Set(['source', 'url', 'mode', 'includeTables']);
-const fileInputKeys = new Set(['source', 'name']);
 
 type CurrentPageDocumentInput = Extract<GetDocumentInput, { source: 'currentPage' }>;
 type UrlDocumentInput = Extract<GetDocumentInput, { source: 'url' }>;
@@ -105,7 +102,7 @@ export function createGetDocumentController(options: {
     try {
       snapshot = await options.executeInTab(tabId, input);
     } catch (error) {
-      if (isPageAccessError(error)) return pageAccessRequired();
+      if (isPageAccessError(error)) return pageAccessRequired(error);
       throw error;
     }
     if (input.mode === 'selection') return selectionResult(snapshot, input);
@@ -126,7 +123,6 @@ export function createGetDocumentController(options: {
 }
 
 function readCurrentPageInput(value: Record<string, unknown>): CurrentPageDocumentInput {
-  rejectUnknownInputs(value, currentPageInputKeys, 'currentPage');
   if (!('mode' in value)) throw new Error('getDocument.currentPage requires mode');
   const input: CurrentPageDocumentInput = { source: 'currentPage', mode: readMode(value.mode) };
   if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
@@ -135,7 +131,6 @@ function readCurrentPageInput(value: Record<string, unknown>): CurrentPageDocume
 }
 
 function readUrlInput(value: Record<string, unknown>): UrlDocumentInput {
-  rejectUnknownInputs(value, urlInputKeys, 'url');
   if (!('url' in value)) throw new Error('getDocument.url requires url');
   const url = readNonEmptyString(value.url, 'url');
   if (!/^https?:\/\//i.test(url)) throw new Error('getDocument.url only supports http/https URLs');
@@ -149,7 +144,6 @@ function readUrlInput(value: Record<string, unknown>): UrlDocumentInput {
 }
 
 function readFileInput(value: Record<string, unknown>): FileDocumentInput {
-  rejectUnknownInputs(value, fileInputKeys, 'file');
   if (!('name' in value)) throw new Error('getDocument.file requires name');
   return { source: 'file', name: readNonEmptyString(value.name, 'name') };
 }
@@ -253,7 +247,7 @@ async function extractUrl(input: UrlDocumentInput, fetchDocument: (url: string) 
     fetched = await fetchDocument(input.url);
   } catch (error) {
     if (isTaskAborted(error)) throw error;
-    return remoteFetchFailed();
+    return remoteFetchFailed(error);
   }
   const url = fetched.finalUrl ?? input.url;
   if (fetched.contentType.includes('application/pdf') || /\.pdf(?:$|[?#])/i.test(url)) {
@@ -318,26 +312,26 @@ function noReadableContent(mode: GetDocumentCurrentPageMode): GetDocumentResult 
   };
 }
 
-function remoteFetchFailed(): GetDocumentRecoverableError {
+function remoteFetchFailed(error: unknown): GetDocumentRecoverableError {
+  // Keep the fetch failure reason (HTTP status, CORS, timeout): the model needs
+  // it to choose between retrying, opening the page, or giving up.
+  const reason = error instanceof Error ? error.message : String(error);
   return {
     ok: false,
     code: 'REMOTE_FETCH_FAILED',
-    message: 'Could not fetch the URL directly.',
+    message: `Could not fetch the URL directly: ${reason}`,
     retryHint: 'Open it in the browser instead: navigate open, then getDocument source:"currentPage".',
   };
 }
 
-function pageAccessRequired(): GetDocumentRecoverableError {
+function pageAccessRequired(error: unknown): GetDocumentRecoverableError {
+  const reason = error instanceof Error ? error.message : String(error);
   return {
     ok: false,
     code: 'PAGE_ACCESS_REQUIRED',
-    message: pageAccessErrorMessage(),
+    message: `${pageAccessErrorMessage()} (${reason})`,
     retryHint: 'Complete Browser Control in settings, then retry.',
   };
-}
-
-function rejectUnknownInputs(value: Record<string, unknown>, allowedKeys: Set<string>, branch: string) {
-  for (const key of Object.keys(value)) if (!allowedKeys.has(key)) throw new Error(`Unknown getDocument.${branch} input: ${key}`);
 }
 
 function readSource(value: unknown): GetDocumentInput['source'] {

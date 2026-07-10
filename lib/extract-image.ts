@@ -5,7 +5,7 @@ export const extractImageRequestType = 'taber.extractImage.request';
 export type ExtractImageFormat = 'png' | 'jpeg';
 
 export type ExtractImageInput =
-  | { source: 'viewport'; format?: ExtractImageFormat; jpegQuality?: number; selector?: never }
+  | { source: 'viewport'; tabId?: number; format?: ExtractImageFormat; jpegQuality?: number; selector?: never }
   | { source: 'imageElement'; selector: string; tabId?: number }
   | { source: 'canvas'; selector: string; tabId?: number; format?: ExtractImageFormat; jpegQuality?: number }
   | { source: 'backgroundImage'; selector: string; tabId?: number };
@@ -53,6 +53,31 @@ export type ExtractImageRecoverableError = {
 export type ExtractImageSuccess = ExtractImageDataSuccess | ExtractImageReferenceSuccess;
 export type ExtractImageResult = ExtractImageSuccess | ExtractImageRecoverableError;
 
+export async function captureVisibleTarget(options: {
+  targetTabId: number;
+  readActiveTabId(): Promise<number | undefined>;
+  activate(tabId: number): Promise<void>;
+  waitForPaint(): Promise<void>;
+  capture(): Promise<string>;
+}) {
+  const previousTabId = await options.readActiveTabId();
+  const activated = previousTabId !== options.targetTabId;
+  if (activated) {
+    await options.activate(options.targetTabId);
+    await options.waitForPaint();
+  }
+  try {
+    if (await options.readActiveTabId() !== options.targetTabId) throw new Error('Target tab changed before viewport capture.');
+    const dataUrl = await options.capture();
+    if (await options.readActiveTabId() !== options.targetTabId) throw new Error('Target tab changed during viewport capture.');
+    return dataUrl;
+  } finally {
+    if (activated && previousTabId !== undefined && await options.readActiveTabId() === options.targetTabId) {
+      await options.activate(previousTabId);
+    }
+  }
+}
+
 export const extractImageInputJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -68,10 +93,6 @@ export const extractImageInputJsonSchema = {
 type ExtractImageViewportInput = Extract<ExtractImageInput, { source: 'viewport' }>;
 export type ExtractImagePageInput = Exclude<ExtractImageInput, ExtractImageViewportInput>;
 
-const viewportInputKeys = new Set(['source', 'format', 'jpegQuality']);
-const imageElementInputKeys = new Set(['source', 'selector', 'tabId']);
-const canvasInputKeys = new Set(['source', 'selector', 'tabId', 'format', 'jpegQuality']);
-const backgroundImageInputKeys = new Set(['source', 'selector', 'tabId']);
 
 export function parseExtractImageInput(value: unknown): ExtractImageInput {
   if (!isRecord(value) || Array.isArray(value)) throw new Error('extractImage input must be an object');
@@ -85,35 +106,30 @@ export function parseExtractImageInput(value: unknown): ExtractImageInput {
 }
 
 function readViewportInput(value: Record<string, unknown>): ExtractImageViewportInput {
-  rejectUnknownInputs(value, viewportInputKeys, 'viewport');
-  return { source: 'viewport', ...readEncoding(value, 'viewport') };
+  return { source: 'viewport', ...readEncoding(value), ...readOptionalTabId(value) };
 }
 
 function readImageElementInput(value: Record<string, unknown>): Extract<ExtractImageInput, { source: 'imageElement' }> {
-  rejectUnknownInputs(value, imageElementInputKeys, 'imageElement');
-  const input: Extract<ExtractImageInput, { source: 'imageElement' }> = { source: 'imageElement', selector: readSelector(value, 'imageElement') };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  return input;
+  return { source: 'imageElement', selector: readSelector(value, 'imageElement'), ...readOptionalTabId(value) };
 }
 
 function readCanvasInput(value: Record<string, unknown>): Extract<ExtractImageInput, { source: 'canvas' }> {
-  rejectUnknownInputs(value, canvasInputKeys, 'canvas');
-  const input: Extract<ExtractImageInput, { source: 'canvas' }> = { source: 'canvas', selector: readSelector(value, 'canvas'), ...readEncoding(value, 'canvas') };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  return input;
+  return { source: 'canvas', selector: readSelector(value, 'canvas'), ...readEncoding(value), ...readOptionalTabId(value) };
 }
 
 function readBackgroundImageInput(value: Record<string, unknown>): Extract<ExtractImageInput, { source: 'backgroundImage' }> {
-  rejectUnknownInputs(value, backgroundImageInputKeys, 'backgroundImage');
-  const input: Extract<ExtractImageInput, { source: 'backgroundImage' }> = { source: 'backgroundImage', selector: readSelector(value, 'backgroundImage') };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  return input;
+  return { source: 'backgroundImage', selector: readSelector(value, 'backgroundImage'), ...readOptionalTabId(value) };
 }
 
-function readEncoding(value: Record<string, unknown>, branch: string): { format?: ExtractImageFormat; jpegQuality?: number } {
+function readOptionalTabId(value: Record<string, unknown>): { tabId?: number } {
+  return 'tabId' in value ? { tabId: readPositiveInteger(value.tabId, 'tabId') } : {};
+}
+
+function readEncoding(value: Record<string, unknown>): { format?: ExtractImageFormat; jpegQuality?: number } {
   const format = 'format' in value ? readFormat(value.format) : undefined;
-  if ('jpegQuality' in value && format !== 'jpeg') throw new Error(`extractImage.${branch}.jpegQuality requires format=jpeg`);
-  return { ...(format ? { format } : {}), ...('jpegQuality' in value ? { jpegQuality: readJpegQuality(value.jpegQuality) } : {}) };
+  // Models pad non-jpeg requests with a placeholder jpegQuality; it is meaningless there, ignore it.
+  const jpegQuality = format === 'jpeg' && value.jpegQuality !== undefined ? readJpegQuality(value.jpegQuality) : undefined;
+  return { ...(format ? { format } : {}), ...(jpegQuality !== undefined ? { jpegQuality } : {}) };
 }
 
 export function createExtractImageController(options: {
@@ -129,7 +145,8 @@ export function createExtractImageController(options: {
         captured = await options.captureVisibleTab(input);
       } catch (error) {
         if (isTaskAborted(error)) throw error;
-        return screenshotUnavailable();
+        if (isPageAccessError(error)) return pageAccessRequired(error);
+        return screenshotUnavailable(error);
       }
       if (!captured.dataUrl.startsWith('data:')) throw new Error('extractImage.viewport returned no data URL');
       return {
@@ -144,7 +161,7 @@ export function createExtractImageController(options: {
     try {
       return requireExtractImageResult(await options.executeInTab(tabId, input));
     } catch (error) {
-      if (isPageAccessError(error)) return pageAccessRequired();
+      if (isPageAccessError(error)) return pageAccessRequired(error);
       throw error;
     }
   }
@@ -254,30 +271,30 @@ function isExtractImageErrorCode(value: unknown): value is ExtractImageErrorCode
   return value === 'ELEMENT_NOT_FOUND' || value === 'INVALID_SELECTOR' || value === 'SCREENSHOT_UNAVAILABLE' || value === 'PAGE_ACCESS_REQUIRED';
 }
 
-function screenshotUnavailable(): ExtractImageRecoverableError {
+function screenshotUnavailable(error: unknown): ExtractImageRecoverableError {
+  const reason = error instanceof Error ? error.message : String(error);
   return {
     ok: false,
     code: 'SCREENSHOT_UNAVAILABLE',
-    message: 'Could not capture the visible tab.',
+    message: `Could not capture the visible tab: ${reason}`,
     retryHint: 'Make sure the target tab is visible, then retry.',
   };
 }
 
-function pageAccessRequired(): ExtractImageRecoverableError {
+function pageAccessRequired(error: unknown): ExtractImageRecoverableError {
+  // Keep the browser's original error: access failures have many causes
+  // (missing grant, minimized window, restricted page) that need diagnosing.
+  const reason = error instanceof Error ? error.message : String(error);
   return {
     ok: false,
     code: 'PAGE_ACCESS_REQUIRED',
-    message: pageAccessErrorMessage(),
+    message: `${pageAccessErrorMessage()} (${reason})`,
     retryHint: 'Complete Browser Control in settings, then retry.',
   };
 }
 
 function mediaTypeFromDataUrl(value: string) {
   return /^data:([^;,]+)[;,]/i.exec(value)?.[1].toLowerCase();
-}
-
-function rejectUnknownInputs(value: Record<string, unknown>, allowedKeys: Set<string>, branch: string) {
-  for (const key of Object.keys(value)) if (!allowedKeys.has(key)) throw new Error(`Unknown extractImage.${branch} input: ${key}`);
 }
 
 function readSource(value: unknown): ExtractImageInput['source'] {

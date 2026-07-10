@@ -16,7 +16,7 @@ import {
 import type { BrowserReplPageCommand, BrowserReplSandboxRun } from '../lib/browser-repl.ts';
 import type { ExtractedTable, PageDocument } from '../lib/get-document.ts';
 import type { ExtractImageInput, ExtractImageResult } from '../lib/extract-image.ts';
-import { skillsDigestForUrl } from '../lib/skills.ts';
+import { skillsDigestForTask } from '../lib/skills.ts';
 
 async function testFixedToolRegistration(harness: E2EHarness) {
   assert.deepEqual(new Set(Object.keys(harness.tools)), new Set(['getDocument', 'extractImage', 'navigate', 'browser', 'browserRepl', 'fs']));
@@ -105,7 +105,7 @@ async function testSiteSkillsLoop(harness: E2EHarness) {
   const reloaded = await harness.runTool('navigate', { action: 'reload' });
   assert.equal('availableSkills' in reloaded, false);
 
-  const digest = await skillsDigestForUrl('https://fixture.test/table');
+  const digest = await skillsDigestForTask('https://fixture.test/table', 'read the table');
   assert.match(digest, /- \/skills\/fixture-table-extraction\.md: How to extract tables/);
   assert.match(digest, /live page state always wins/);
 }

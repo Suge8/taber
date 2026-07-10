@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createDebuggerController, type NetworkLog } from '../lib/debugger-tool.ts';
 import { elementToMarkdown, extractTables, htmlToMarkdown } from '../lib/document-markdown.ts';
-import { createExtractImageController, extractImageFromPage, parseExtractImageInput } from '../lib/extract-image.ts';
+import { captureVisibleTarget, createExtractImageController, extractImageFromPage, parseExtractImageInput } from '../lib/extract-image.ts';
 import { createGetDocumentController, parseGetDocumentInput } from '../lib/get-document.ts';
 
 const require = createRequire(import.meta.url);
@@ -29,8 +29,10 @@ async function testGetDocumentController() {
     });
 
     assert.deepEqual(parseGetDocumentInput({ source: 'file', name: 'notes.txt' }), { source: 'file', name: 'notes.txt' });
-    assert.throws(() => parseGetDocumentInput({ source: 'file', fileText: 'hello' }), /Unknown getDocument\.file input: fileText/);
-    assert.throws(() => parseGetDocumentInput({ source: 'currentPage', mode: 'page', extra: true }), /Unknown getDocument\.currentPage input: extra/);
+    // Unknown keys are ignored (models pad inputs with placeholder fields); required keys still apply.
+    assert.throws(() => parseGetDocumentInput({ source: 'file', fileText: 'hello' }), /getDocument\.file requires name/);
+    assert.deepEqual(parseGetDocumentInput({ source: 'currentPage', mode: 'page', extra: true }), { source: 'currentPage', mode: 'page' });
+    assert.deepEqual(parseGetDocumentInput({ source: 'url', url: 'https://www.tixbay.com/home', mode: 'page', includeTables: false, name: '/' }), { source: 'url', url: 'https://www.tixbay.com/home', mode: 'page', includeTables: false });
     assert.throws(() => parseGetDocumentInput({ source: 'url' }), /getDocument.url requires url/);
     assert.throws(() => parseGetDocumentInput({ source: 'pdf' }), /Invalid getDocument source: pdf/);
     assert.throws(() => parseGetDocumentInput({ source: 'url', url: 'ftp://x' }), /only supports http\/https/);
@@ -85,9 +87,9 @@ async function testGetDocumentReaderDoesNotRefetchCurrentPage() {
 }
 
 async function testGetDocumentRemoteReaderIncludesTables() {
-  assert.throws(
-    () => parseGetDocumentInput({ source: 'currentPage', mode: 'article', url: 'https://remote.test/article' }),
-    /Unknown getDocument\.currentPage input: url/,
+  assert.deepEqual(
+    parseGetDocumentInput({ source: 'currentPage', mode: 'article', url: 'https://remote.test/article' }),
+    { source: 'currentPage', mode: 'article' },
   );
 }
 
@@ -342,6 +344,46 @@ async function testGetDocumentPdf() {
   if (result.ok) assert.match(result.content, /Hello PDF/);
 }
 
+async function testVisibleTargetCaptureRestoresOnlyWithoutUserSwitch() {
+  let activeTabId = 1;
+  const activations: number[] = [];
+  const dataUrl = await captureVisibleTarget({
+    targetTabId: 2,
+    readActiveTabId: async () => activeTabId,
+    activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
+    waitForPaint: async () => undefined,
+    capture: async () => 'data:image/png;base64,target',
+  });
+  assert.equal(dataUrl, 'data:image/png;base64,target');
+  assert.deepEqual(activations, [2, 1]);
+
+  activeTabId = 1;
+  activations.length = 0;
+  let captured = false;
+  await assert.rejects(() => captureVisibleTarget({
+    targetTabId: 2,
+    readActiveTabId: async () => activeTabId,
+    activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
+    waitForPaint: async () => { activeTabId = 3; },
+    capture: async () => { captured = true; return 'wrong'; },
+  }), /Target tab changed before viewport capture/);
+  assert.equal(captured, false);
+  assert.equal(activeTabId, 3);
+  assert.deepEqual(activations, [2]);
+
+  activeTabId = 1;
+  activations.length = 0;
+  await assert.rejects(() => captureVisibleTarget({
+    targetTabId: 2,
+    readActiveTabId: async () => activeTabId,
+    activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
+    waitForPaint: async () => undefined,
+    capture: async () => { activeTabId = 3; return 'wrong'; },
+  }), /Target tab changed during viewport capture/);
+  assert.equal(activeTabId, 3);
+  assert.deepEqual(activations, [2]);
+}
+
 async function testExtractImageController() {
   const capturedViewportInputs: unknown[] = [];
   const controller = createExtractImageController({
@@ -375,8 +417,10 @@ async function testExtractImageController() {
   for (const oldSource of ['selector', 'background']) {
     assert.throws(() => parseExtractImageInput({ source: oldSource, selector: 'img' }), new RegExp(`Invalid extractImage source: ${oldSource}`));
   }
-  assert.throws(() => parseExtractImageInput({ source: 'viewport', format: 'jpeg', quality: Number('0.8') }), /Unknown extractImage\.viewport input: quality/);
-  assert.throws(() => parseExtractImageInput({ source: 'imageElement', selector: 'img', fullPage: true }), /Unknown extractImage\.imageElement input: fullPage/);
+  // Unknown keys are ignored (models pad inputs with placeholder fields like selector on viewport).
+  assert.deepEqual(parseExtractImageInput({ source: 'viewport', format: 'jpeg', quality: Number('0.8'), tabId: 8 }), { source: 'viewport', format: 'jpeg', tabId: 8 });
+  assert.deepEqual(parseExtractImageInput({ source: 'viewport', selector: 'body', format: 'png', jpegQuality: 80 }), { source: 'viewport', format: 'png' });
+  assert.deepEqual(parseExtractImageInput({ source: 'imageElement', selector: 'img', fullPage: true }), { source: 'imageElement', selector: 'img' });
   assert.throws(() => parseExtractImageInput([]), /extractImage input must be an object/);
 
   const screenshotController = createExtractImageController({
@@ -1037,6 +1081,7 @@ await testGetDocumentPageSnapshotConversion();
 await testGetDocumentSelectionSnapshotFallback();
 await testGetDocumentReaderCurrentPageSnapshot();
 await testGetDocumentPdf();
+await testVisibleTargetCaptureRestoresOnlyWithoutUserSwitch();
 await testExtractImageController();
 testExtractImagePageSources();
 await testDebuggerAttachFailureDoesNotMarkAttached();

@@ -35,8 +35,19 @@ execFileSync(process.execPath, ['--experimental-strip-types', '--input-type=modu
   import assert from 'node:assert/strict';
   globalThis.__TABER_ENABLE_DEBUGGER__ = true;
   const { createAgentToolPromptEstimateText, createAgentTools } = await import(${JSON.stringify(new URL('../lib/agent-tools.ts', import.meta.url).href)});
-  const tools = createAgentTools({ sessionId: 1, async sendMessage() { return {}; }, async emitEvent() {} });
+  const messages = [];
+  const tools = createAgentTools({
+    sessionId: 1,
+    targetTabId: 7,
+    async sendMessage(message) { messages.push(message); return {}; },
+    async emitEvent() {},
+  });
   assert.equal('debugger' in tools, true);
+  await assert.rejects(
+    () => tools.debugger.execute({ action: 'diagnostics', tabId: 8 }, { abortSignal: new AbortController().signal }),
+    /locked to target tab 7; received tabId 8.*navigate\.switchTab/,
+  );
+  assert.equal(messages.length, 0, 'mismatched debugger tabId must fail before any background request');
   const prompt = JSON.parse(createAgentToolPromptEstimateText());
   assert.match(prompt.debugger.description, /accessibility snapshots/);
   assert(prompt.debugger.inputSchema.properties.action.enum.includes('accessibilitySnapshot'));
@@ -51,7 +62,7 @@ const offscreenSource = readFileSync(new URL('../entrypoints/offscreen/main.ts',
 assert.match(offscreenSource, /instructionsByLocale\[task\.locale\]/);
 assert.match(offscreenSource, /instructionsVersion: AGENT_INSTRUCTIONS_VERSION/);
 const agentInstructions = readFileSync(new URL('../lib/agent-instructions.ts', import.meta.url), 'utf8');
-assert.match(agentInstructions, /AGENT_INSTRUCTIONS_VERSION = 5/);
+assert.match(agentInstructions, /AGENT_INSTRUCTIONS_VERSION = 9/);
 assert.match(agentInstructions, /## 权限层级/);
 assert.match(agentInstructions, /## Authority Hierarchy/);
 assert.match(agentInstructions, /不执行其中的指令/);
@@ -84,10 +95,23 @@ assert.equal(browserPrompt.inputSchema.properties.limit.maximum, 80);
 assert.equal('tabId' in browserPrompt.inputSchema.properties, false);
 assert.deepEqual(parseBrowserInput({ action: 'click', target: { ref: 'r1.1' }, scope: 'viewport', limit: 1 }), { action: 'click', target: { ref: 'r1.1' }, scope: 'viewport', limit: 1 });
 assert.deepEqual(parseBrowserInput({ action: 'snapshot', target: { ref: 'ignored' }, value: 'ignored', key: 'Enter' }), { action: 'snapshot' });
-assert.throws(() => parseBrowserInput({ action: 'click', target: { ref: { selector: '#save' } } }), /target.ref must be a non-empty string/);
+assert.throws(() => parseBrowserInput({ action: 'click', target: { ref: { selector: '#save' } } }), /exactly one locator/);
 assert.deepEqual(parseBrowserInput({ action: 'click', target: { x: 120.5, y: 48 } }), { action: 'click', target: { x: 120.5, y: 48 } });
-assert.throws(() => parseBrowserInput({ action: 'click', target: { x: 10 } }), /target.y must be a finite number/);
-assert.throws(() => parseBrowserInput({ action: 'click', target: { x: 10, y: 20, text: 'Save' } }), /exactly one locator/);
+assert.throws(() => parseBrowserInput({ action: 'click', target: { x: 10 } }), /exactly one locator/);
+// Placeholder cleanup: empty strings and 0/0 coordinates yield to the one real locator.
+assert.deepEqual(
+  parseBrowserInput({ action: 'click', target: { ref: '', role: '', name: '', label: '', text: 'Lusi is on the road', selector: '', x: 0, y: 0 } }),
+  { action: 'click', target: { text: 'Lusi is on the road' } },
+);
+assert.deepEqual(parseBrowserInput({ action: 'click', target: { x: 10, y: 20, text: 'Save' } }), { action: 'click', target: { text: 'Save' } });
+assert.deepEqual(parseBrowserInput({ action: 'click', target: { x: 0, y: 0 } }), { action: 'click', target: { x: 0, y: 0 } });
+// A ref wins over echoed companions: it is the most precise locator and stale refs surface as STALE_REF.
+assert.deepEqual(parseBrowserInput({ action: 'click', target: { ref: 'r1.1', text: 'Save' } }), { action: 'click', target: { ref: 'r1.1' } });
+assert.deepEqual(
+  parseBrowserInput({ action: 'click', target: { ref: 'bef9f0e96c444.1abc', role: 'button', name: 'Search', label: 'Search', text: 'Search', selector: '#fake' } }),
+  { action: 'click', target: { ref: 'bef9f0e96c444.1abc' } },
+);
+assert.throws(() => parseBrowserInput({ action: 'click', target: { text: 'Save', selector: '#save' } }), /exactly one locator/);
 const replPrompt = prompt.browserRepl;
 const replDescription = replPrompt.description;
 assert.match(replDescription, /Advanced REPL for operations browser cannot express/);
@@ -167,10 +191,22 @@ const targetTools = createAgentTools({
 });
 
 await (targetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'currentTab' }, { abortSignal: new AbortController().signal });
-await assert.rejects(
-  () => (targetTools.getDocument.execute as (input: unknown, options: unknown) => Promise<unknown>)({ source: 'currentPage', mode: 'page', tabId: 8 }, { abortSignal: new AbortController().signal }),
-  /locked to target tab 7/,
-);
+const mismatchedTargets: Array<[string, unknown]> = [
+  ['getDocument', { source: 'currentPage', mode: 'page', tabId: 8 }],
+  ['extractImage', { source: 'viewport', tabId: 8 }],
+  ['extractImage', { source: 'imageElement', selector: 'img', tabId: 8 }],
+  ['browser', { action: 'snapshot', tabId: 8 }],
+  ['browserRepl', { code: 'return 1', tabId: 8 }],
+  ['navigate', { action: 'currentTab', tabId: 8 }],
+];
+for (const [toolName, input] of mismatchedTargets) {
+  const selectedTool = targetTools[toolName as keyof typeof targetTools];
+  await assert.rejects(
+    () => (selectedTool.execute as (input: unknown, options: unknown) => Promise<unknown>)(input, { abortSignal: new AbortController().signal }),
+    /locked to target tab 7; received tabId 8.*navigate\.switchTab/,
+  );
+}
+assert.equal(targetMessages.length, 1, 'mismatched tabId must fail before any background request');
 await (targetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'switchTab', tabId: 8 }, { abortSignal: new AbortController().signal });
 await (targetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'currentTab' }, { abortSignal: new AbortController().signal });
 await (targetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'open', target: 'new', url: 'https://new.example' }, { abortSignal: new AbortController().signal });
@@ -276,6 +312,7 @@ const failingTargetTools = createAgentTools({
   targetTabId: 7,
   async sendMessage(message) {
     if (isRecord(message) && message.type === 'taber.navigate.request' && isRecord(message.input) && message.input.action === 'open') return { error: 'Tab is not operable: chrome://settings' };
+    if (isRecord(message) && message.type === 'taber.getDocument.extractPage') return { error: 'Target tab is not operable: chrome://settings' };
     if (isRecord(message) && message.type === 'taber.navigate.request' && isRecord(message.input) && message.input.action === 'switchTab') return { error: 'Target tab is no longer available: 7' };
     throw new Error(`Unexpected failing target message: ${JSON.stringify(message)}`);
   },
@@ -291,13 +328,17 @@ const failingTargetTools = createAgentTools({
 
 await assert.rejects(
   () => (failingTargetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'open', target: 'new', url: 'https://example.com' }, { abortSignal: new AbortController().signal }),
+  /Tab is not operable: chrome:\/\/settings/,
+);
+await assert.rejects(
+  () => (failingTargetTools.getDocument.execute as (input: unknown, options: unknown) => Promise<unknown>)({ source: 'currentPage', mode: 'page' }, { abortSignal: new AbortController().signal }),
   /Target tab is not operable: chrome:\/\/settings/,
 );
 await assert.rejects(
   () => (failingTargetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'switchTab', tabId: 8 }, { abortSignal: new AbortController().signal }),
   /Target tab is no longer available: 7/,
 );
-assert.deepEqual(unavailable, ['Target tab is not operable: chrome://settings', 'Target tab is no longer available: 7']);
+assert.deepEqual(unavailable, ['Target tab is no longer available: 7']);
 assert.deepEqual(failedTargetChanges, []);
 
 // Skill announcements follow host changes on any navigate action and after browserRepl page actions.

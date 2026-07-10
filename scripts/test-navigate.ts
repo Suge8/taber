@@ -27,7 +27,7 @@ async function testOpensCurrentTabAfterNavigationEvent() {
   const pending = controller.navigate({ action: 'open', url: 'https://example.com' });
   await flushMicrotasks();
 
-  assert.deepEqual(browser.tabs.updates[0], { tabId: 1, properties: { active: true, url: 'https://example.com' } });
+  assert.deepEqual(browser.tabs.updates[0], { tabId: 1, properties: { url: 'https://example.com' } });
   assert.equal(browser.webNavigation.onCompleted.size, 1);
 
   browser.webNavigation.onCompleted.emit({ tabId: 1, frameId: 0, url: 'https://example.com' });
@@ -70,8 +70,9 @@ async function testListsAndSwitchesTabs() {
   browser.tabs.tabs.push({ id: 2, active: false, index: 2, status: 'complete', title: 'Second', url: 'https://second.example', windowId: 1 });
   const switched = await controller.navigate({ action: 'switchTab', tabId: 2 });
   assert.equal(switched.tab?.id, 2);
-  assert.equal(switched.tab?.active, true);
-  assert.equal(browser.tabs.tabs[0].active, false);
+  // Retargeting must not steal the user's active tab.
+  assert.deepEqual(browser.tabs.updates, []);
+  assert.equal(browser.tabs.tabs[0].active, true);
 }
 
 async function testCurrentTabRejectsUnsupportedActiveTab() {
@@ -92,16 +93,18 @@ async function testTargetTabOverridesActiveTab() {
 
   const pending = controller.navigate({ action: 'open', url: 'https://target.example' });
   await flushMicrotasks();
-  assert.deepEqual(browser.tabs.updates[0], { tabId: 2, properties: { active: true, url: 'https://target.example' } });
+  assert.deepEqual(browser.tabs.updates[0], { tabId: 2, properties: { url: 'https://target.example' } });
   browser.webNavigation.onCompleted.emit({ tabId: 2, frameId: 0, url: 'https://target.example' });
   assert.equal((await pending).tab?.id, 2);
 
+  await assert.rejects(controller.navigate({ action: 'currentTab', tabId: 1 }), /locked to target tab 2/);
   await assert.rejects(controller.navigate({ action: 'reload', tabId: 1 }), /locked to target tab 2/);
-  await assert.rejects(controller.navigate({ action: 'open', target: 'new', url: 'https://new.example', tabId: 1 }), /locked to target tab 2/);
+  await assert.rejects(controller.navigate({ action: 'closeTab', tabId: 1 }), /locked to target tab 2/);
+  assert.deepEqual(browser.tabs.reloads, []);
 
   const newTab = controller.navigate({ action: 'open', target: 'new', url: 'https://new.example' });
   await flushMicrotasks();
-  assert.deepEqual(browser.tabs.creates[0], { url: 'https://new.example', active: true, windowId: 11 });
+  assert.deepEqual(browser.tabs.creates[0], { url: 'https://new.example', active: false, windowId: 11 });
   browser.webNavigation.onCompleted.emit({ tabId: 3, frameId: 0, url: 'https://new.example' });
   const result = await newTab;
   assert.equal(result.tab?.id, 3);
@@ -115,14 +118,15 @@ async function testSwitchTabFailsWhenLockedTargetUnavailable() {
   await assert.rejects(closedController.navigate({ action: 'switchTab', tabId: 8 }), /Target tab is no longer available: 7/);
   assert.deepEqual(closedBrowser.tabs.updates, []);
 
+  // A non-operable locked target (chrome://) must not block switching away from it.
   const inoperableBrowser = createFakeBrowser();
   inoperableBrowser.tabs.tabs = [
     { id: 7, active: true, index: 0, status: 'complete', title: 'Settings', url: 'chrome://settings', windowId: 11 },
     { id: 8, active: false, index: 1, status: 'complete', title: 'Next', url: 'https://next.example', windowId: 11 },
   ];
   const inoperableController = createNavigateController({ ...inoperableBrowser, currentTabId: 7 });
-  await assert.rejects(inoperableController.navigate({ action: 'switchTab', tabId: 8 }), /Target tab is not operable: chrome:\/\/settings/);
-  assert.deepEqual(inoperableBrowser.tabs.updates, []);
+  const switched = await inoperableController.navigate({ action: 'switchTab', tabId: 8 });
+  assert.equal(switched.tab?.id, 8);
 }
 
 async function testHistoryCurrentAndCloseActions() {
@@ -148,6 +152,18 @@ async function testHistoryCurrentAndCloseActions() {
   assert.equal(browser.tabs.tabs.length, 0);
 }
 
+async function testAbortedNavigationKeepsWaitingForReplacement() {
+  const browser = createFakeBrowser();
+  const controller = createNavigateController(browser);
+
+  const pending = controller.navigate({ action: 'open', url: 'https://example.com' });
+  await flushMicrotasks();
+
+  browser.webNavigation.onErrorOccurred.emit({ tabId: 1, frameId: 0, url: 'https://example.com', error: 'net::ERR_ABORTED' });
+  browser.webNavigation.onCompleted.emit({ tabId: 1, frameId: 0, url: 'https://example.com/home' });
+  assert.deepEqual((await pending).navigation, { status: 'completed', url: 'https://example.com/home' });
+}
+
 async function testNavigationTimeoutUsesEventWaiter() {
   const browser = createFakeBrowser();
   const controller = createNavigateController(browser);
@@ -158,7 +174,9 @@ async function testNavigationTimeoutUsesEventWaiter() {
   assert.equal(browser.scheduler.delayMs, 100);
   assert.equal(browser.tabs.reloads[0], 1);
   browser.scheduler.fire();
-  await assert.rejects(pending, /Navigation timed out after 100ms for tab 1/);
+  const result = await pending;
+  assert.deepEqual(result.navigation, { status: 'timeout', url: undefined });
+  assert.equal(result.tab?.id, 1);
   assert.equal(browser.webNavigation.onCompleted.size, 0);
 }
 
@@ -292,5 +310,6 @@ await testTargetTabOverridesActiveTab();
 await testSwitchTabFailsWhenLockedTargetUnavailable();
 await testHistoryCurrentAndCloseActions();
 await testNavigationTimeoutUsesEventWaiter();
+await testAbortedNavigationKeepsWaitingForReplacement();
 
 console.info('navigate tests passed');

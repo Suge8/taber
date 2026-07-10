@@ -3,7 +3,7 @@ import { effectiveTabUrl, isOperableTab, readRequiredWindowId, selectOperableAct
 import { createAgentHostController } from '../lib/agent-host-controller';
 import { createChromeApiBroker, isTrustedChromeApiSender } from '../lib/chrome-api-broker';
 import { createDebuggerController, debuggerRequestType } from '../lib/debugger-tool';
-import { extractImageFromPage, parseExtractImageInput, type ExtractImageInput } from '../lib/extract-image';
+import { captureVisibleTarget, extractImageFromPage, parseExtractImageInput, type ExtractImageInput } from '../lib/extract-image';
 import { extractDocumentFromPage, parseGetDocumentInput } from '../lib/get-document';
 import { createNavigateController, navigateRequestType } from '../lib/navigate';
 import { createOffscreenLifecycle } from '../lib/offscreen-lifecycle';
@@ -192,7 +192,7 @@ async function debug(message: Record<string, unknown>) {
   const targetTabId = readTargetTabId(message.targetTabId);
   if (targetTabId !== undefined) {
     if (Number.isInteger(input.tabId) && Number(input.tabId) !== targetTabId) throw targetMismatchError(targetTabId, Number(input.tabId));
-    await activateTargetTab(targetTabId);
+    await requireTargetTab(targetTabId);
     return debuggerController.run({ ...input, tabId: targetTabId });
   }
   if (Number.isInteger(input.tabId) && Number(input.tabId) > 0) return debuggerController.run(input);
@@ -255,13 +255,9 @@ async function assertMessageTarget(message: Record<string, unknown>, requestedTa
 
 async function assertTargetTab(targetTabId: number, requestedTabId: number) {
   if (requestedTabId !== targetTabId) throw targetMismatchError(targetTabId, requestedTabId);
-  await activateTargetTab(targetTabId);
-}
-
-async function activateTargetTab(tabId: number) {
-  const tab = await requireTargetTab(tabId);
-  const activeTab = await updateTab(tabId, { active: true });
-  return { ...tab, ...activeTab };
+  // Validate only: page tools work on background tabs, and stealing the user's
+  // active tab on every call breaks unattended automation.
+  await requireTargetTab(targetTabId);
 }
 
 async function requireTargetTab(tabId: number): Promise<BrowserTabLike> {
@@ -335,12 +331,26 @@ async function extractPageDocument(message: Record<string, unknown>) {
   }).then((result) => result[0]?.result);
 }
 
+const CAPTURE_ACTIVATION_RENDER_DELAY_MS = 150;
+
 async function captureVisibleTab(message: Record<string, unknown>) {
   const input = parseExtractImageInput(isRecord(message.input) ? message.input : {});
   if (input.source !== 'viewport') throw new Error('taber.extractImage.captureVisibleTab only supports source=viewport');
   const targetTabId = readTargetTabId(message.targetTabId);
-  const tab = targetTabId === undefined ? await currentTab(readWindowId(message.windowId)) : await activateTargetTab(targetTabId);
-  const dataUrl = await browser.tabs.captureVisibleTab(requireWindowId(tab), captureVisibleTabDetails(input));
+  if (targetTabId !== undefined && input.tabId !== undefined && input.tabId !== targetTabId) throw targetMismatchError(targetTabId, input.tabId);
+  const captureTabId = targetTabId ?? input.tabId;
+  const tab = captureTabId === undefined ? await currentTab(readWindowId(message.windowId)) : await requireTargetTab(captureTabId);
+  const windowId = requireWindowId(tab);
+
+  // Chrome only captures the active tab. Reject any screenshot taken across a
+  // user tab switch, and restore focus only while the target remains active.
+  const dataUrl = await captureVisibleTarget({
+    targetTabId: requireTabId(tab),
+    readActiveTabId: async () => (await browser.tabs.query({ active: true, windowId }) as BrowserTabLike[])[0]?.id,
+    activate: async (tabId) => { await updateTab(tabId, { active: true }); },
+    waitForPaint: () => new Promise((resolve) => setTimeout(resolve, CAPTURE_ACTIVATION_RENDER_DELAY_MS)),
+    capture: () => browser.tabs.captureVisibleTab(windowId, captureVisibleTabDetails(input)),
+  });
   // tab.width/height are the viewport size in CSS px: the coordinate space for browser { x, y } targets.
   return { dataUrl, ...(tab.width && tab.height ? { width: tab.width, height: tab.height } : {}) };
 }
@@ -365,7 +375,12 @@ async function extractPageImage(message: Record<string, unknown>) {
 async function startTask(message: Record<string, unknown>) {
   if (typeof message.prompt !== 'string') throw new Error('Task prompt is required');
   const windowId = readRequiredWindowId(message.windowId);
-  const tab = await currentTab(windowId);
+  // Tasks may start on non-operable pages (chrome://, new tab): pure Q&A needs
+  // no page, and navigate.open can steer the tab to a real site. Page tools
+  // report recoverable errors until then.
+  const tabs = await queryActiveTabs(windowId);
+  const tab = selectOperableActiveTab(tabs) ?? tabs.find((candidate) => Number.isInteger(candidate.id) && Number(candidate.id) > 0);
+  if (!tab) throw new Error('No active tab in the side panel window');
   const targetTab = tabContext(tab);
   return agentHost.startTask({ prompt: message.prompt, sessionId: readSessionId(message.sessionId), windowId: targetTab.windowId ?? windowId, targetTabId: targetTab.id, targetTab, locale: readAgentLocale(message.locale) });
 }

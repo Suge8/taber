@@ -39,7 +39,7 @@ type AgentToolOptions = {
 
 const getDocumentDescription = 'Read webpage, PDF, or workspace file as structured content. Long content is saved to /workspace and the result carries a preview plus savedTo; read the file for the rest. Use when you need article text, page content, selection, or tables. Fetch-first: for public/static URLs prefer source:"url" (fetches the page or PDF directly, no tab, fast, parallelizable); use source:"currentPage" when content needs login, JS rendering, or the controlled tab. For currentPage: mode:"article" extracts main content, mode:"page" gets full text, mode:"selection" reads user selection. source:"file" reads an uploaded or generated /workspace file (pdf, docx, or text) as text. Results include open shadow root text and same-origin iframe content; cross-origin iframes show metadata with access hints.';
 const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport results include width/height: the viewport size in CSS px, the coordinate space for browser { x, y } targets (scale screenshot pixel coords by width/imageWidth). Viewport requires visible target tab; to capture another tab, call navigate.switchTab first.';
-const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Use for all navigation. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly.';
+const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Use for all navigation. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly. navigation.status:"timeout" means the load event did not fire in time but the page is often already usable: check tab.url and continue with browser snapshot instead of retrying the same navigation.';
 const debuggerDescription = 'Debug-build only: read console, network, failed requests, accessibility snapshots, main-world JS state, or raw CDP. Use for diagnosing console errors, network failures, and accessibility issues. Cookies are blocked.';
 const fsDescription = 'Session file workspace and site skills. ls lists /workspace (uploads and outputs) and /skills (stored site knowledge). read returns file text. write saves text files (.md/.txt/.html/.csv/.json) or converts Markdown to Word (.docx); for PDF output write .md or .html and tell the user to export it from the sidebar. /skills/*.md files are reusable prior knowledge about sites: read matching skills before blind exploration; they are priors, live page state wins. After a task where you discovered a non-obvious reusable site flow or pitfall, write a concise skill file. Never store secrets or personal data.';
 
@@ -194,7 +194,9 @@ class AgentToolRuntime {
       getCurrentTabId: () => this.getCurrentTabId(),
       executeInTab: (tabId, nextInput) => this.extractPageDocument(tabId, nextInput, abortSignal),
       fetchDocument: (url) => abortable(async () => {
-        const response = await fetch(url, { redirect: 'follow' }).then(requireOk);
+        // Bound the fetch so a hanging server cannot stall the whole task.
+        const signal = abortSignal ? AbortSignal.any([abortSignal, AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS)]) : AbortSignal.timeout(REMOTE_FETCH_TIMEOUT_MS);
+        const response = await fetch(url, { redirect: 'follow', signal }).then(requireOk);
         return { contentType: response.headers.get('content-type') ?? '', data: await response.arrayBuffer(), finalUrl: response.url || undefined };
       }, abortSignal),
       readFile: async (name) => {
@@ -206,7 +208,7 @@ class AgentToolRuntime {
   }
 
   extractImage(input: ExtractImageInput, abortSignal?: AbortSignal) {
-    if (input.source !== 'viewport' && input.tabId !== undefined) this.assertInputTabId('extractImage', input.tabId);
+    if (input.tabId !== undefined) this.assertInputTabId('extractImage', input.tabId);
     return createExtractImageController({
       getCurrentTabId: () => this.getCurrentTabId(),
       captureVisibleTab: (nextInput) => this.captureVisibleTab(nextInput, abortSignal),
@@ -217,7 +219,7 @@ class AgentToolRuntime {
   async navigate(input: NavigateInput, abortSignal?: AbortSignal) {
     this.assertNavigateTabId(input);
     const response = await abortable(() => this.sendMessage({ type: navigateRequestType, input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw await this.navigateError(input, response.error);
+    if (isRecord(response) && typeof response.error === 'string') throw await this.errorFromResponse(response.error);
     const result = response as NavigateResult;
     await this.applyNavigateTargetChange(input, result);
     return this.withAvailableSkills(input, result);
@@ -345,14 +347,6 @@ class AgentToolRuntime {
     await this.onTargetChanged?.({ fromTabId, toTabId: tab.id, reason, tab });
   }
 
-  private async navigateError(input: NavigateInput, message: string) {
-    const targetBoundActions = new Set<NavigateInput['action']>(['open', 'back', 'forward', 'reload', 'currentTab']);
-    if (this.currentTargetTabId() !== undefined && targetBoundActions.has(input.action) && message.startsWith('Tab is not operable:')) {
-      return this.targetUnavailableError(message.replace(/^Tab/, 'Target tab'));
-    }
-    return this.errorFromResponse(message);
-  }
-
   private async errorFromResponse(message: string) {
     if (isTargetUnavailableMessage(message)) return this.targetUnavailableError(message);
     return new Error(message);
@@ -466,13 +460,17 @@ function abortable<T>(run: () => Promise<T>, abortSignal?: AbortSignal) {
   });
 }
 
+const REMOTE_FETCH_TIMEOUT_MS = 30_000;
+
 function requireOk(response: Response) {
   if (!response.ok) throw new Error(`${response.url}: ${response.status}`);
   return response;
 }
 
 function normalizePageExecutionError(error: unknown) {
-  return isPageAccessError(error) ? new Error(pageAccessErrorMessage()) : error instanceof Error ? error : new Error(String(error));
+  const original = error instanceof Error ? error : new Error(String(error));
+  // Prefix the guidance but keep the original reason for diagnosis.
+  return isPageAccessError(original) ? new Error(`${pageAccessErrorMessage()} (${original.message})`) : original;
 }
 
 function readPositiveNumber(value: unknown) {
@@ -489,7 +487,7 @@ function readHost(url: string | undefined) {
 }
 
 function isTargetUnavailableMessage(message: string) {
-  return /^Target tab (?:is no longer available|is not operable|\d+ was closed)/.test(message);
+  return /^Target tab (?:is no longer available|\d+ was closed)/.test(message);
 }
 
 function nowMs() {
