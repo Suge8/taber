@@ -1,9 +1,7 @@
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { stepCountIs, ToolLoopAgent } from 'ai';
 import { browser } from 'wxt/browser';
 import { isOperableTab } from '../../lib/active-tab';
 import { browserPageScriptConsentKey } from '../../lib/browser-access';
-import { createAgentToolPromptEstimateText, createAgentTools } from '../../lib/agent-tools';
 import { AGENT_HOST_IDLE_TIMEOUT_MS } from '../../lib/agent-host-controller';
 import { collectAgentResponseText } from '../../lib/agent-stream';
 import {
@@ -18,12 +16,7 @@ import {
 } from '../../lib/db';
 import { compactContext, contextLimit, needsCompaction } from '../../lib/context-compaction';
 import { createDeltaCoalescer } from '../../lib/event-coalescer';
-import { codexProviderOptions, createCodexLanguageModel } from '../../lib/codex-runtime';
-import { readFreshCodexTokens } from '../../lib/codex-provider';
 import { deriveModelMessages, estimateModelPromptTokens } from '../../lib/model-context';
-import { createOpenAIApiLanguageModel, openAIProviderOptions } from '../../lib/openai-runtime';
-import { readFreshXaiTokens } from '../../lib/xai-provider';
-import { createXaiLanguageModel, xaiProviderOptions } from '../../lib/xai-runtime';
 import { readSelectedConfiguredModel } from '../../lib/provider-config-flow';
 import { getProviderApiKey, getReasoningEffort, reasoningProviderOptionsForModel } from '../../lib/provider-store';
 import { skillsDigestForTask } from '../../lib/skills';
@@ -238,13 +231,17 @@ async function createConfiguredRuntime(
 ) {
   const { sessionId, taskId, windowId, targetTabId, targetTabUrl } = task;
   const modelRecord = await readSelectedModel();
-  const providerRecord = await database.providers.get(modelRecord.providerId);
+  const [providerRecord, reasoningEffort] = await Promise.all([
+    database.providers.get(modelRecord.providerId),
+    getReasoningEffort(),
+  ]);
   if (!providerRecord) throw new Error(`Model provider not found: ${modelRecord.providerId}`);
 
-  const reasoningEffort = await getReasoningEffort();
-  const model = await createLanguageModel(providerRecord, modelRecord, reasoningEffort);
-  const providerOptions = languageModelProviderOptions(providerRecord.kind, modelRecord, reasoningEffort);
-  const browserJsEnabled = await readBrowserJsEnabled();
+  const [{ createAgentToolPromptEstimateText, createAgentTools }, { model, providerOptions }, browserJsEnabled] = await Promise.all([
+    import('../../lib/agent-tools'),
+    createLanguageModelRuntime(providerRecord, modelRecord, reasoningEffort),
+    readBrowserJsEnabled(),
+  ]);
   const toolPromptText = createAgentToolPromptEstimateText({ browserJsEnabled });
   return {
     modelRecord,
@@ -274,29 +271,47 @@ async function createConfiguredRuntime(
 
 type ReasoningEffortSetting = Awaited<ReturnType<typeof getReasoningEffort>>;
 
-async function createLanguageModel(providerRecord: Provider, modelRecord: Model, reasoningEffort: ReasoningEffortSetting) {
+async function createLanguageModelRuntime(providerRecord: Provider, modelRecord: Model, reasoningEffort: ReasoningEffortSetting) {
   const shared = { modelId: modelRecord.name, providerName: providerRecord.name, baseURL: providerRecord.baseURL };
   if (providerRecord.kind === 'openaiCodex') {
-    return createCodexLanguageModel({ ...shared, reasoningEffort, supportedReasoningEfforts: modelRecord.supportedReasoningEfforts, auth: () => readFreshCodexTokens(providerRecord.id) });
+    const [{ codexProviderOptions, createCodexLanguageModel }, { readFreshCodexTokens }] = await Promise.all([
+      import('../../lib/codex-runtime'),
+      import('../../lib/codex-provider'),
+    ]);
+    return {
+      model: createCodexLanguageModel({ ...shared, reasoningEffort, supportedReasoningEfforts: modelRecord.supportedReasoningEfforts, auth: () => readFreshCodexTokens(providerRecord.id) }),
+      providerOptions: codexProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts),
+    };
   }
   if (providerRecord.kind === 'xaiSub') {
-    return createXaiLanguageModel({
-      ...shared,
-      reasoningEffort,
-      supportedReasoningEfforts: modelRecord.supportedReasoningEfforts,
-      auth: async () => ({ accessToken: (await readFreshXaiTokens(providerRecord.id)).accessToken }),
-    });
+    const [{ createXaiLanguageModel, xaiProviderOptions }, { readFreshXaiTokens }] = await Promise.all([
+      import('../../lib/xai-runtime'),
+      import('../../lib/xai-provider'),
+    ]);
+    return {
+      model: createXaiLanguageModel({
+        ...shared,
+        reasoningEffort,
+        supportedReasoningEfforts: modelRecord.supportedReasoningEfforts,
+        auth: async () => ({ accessToken: (await readFreshXaiTokens(providerRecord.id)).accessToken }),
+      }),
+      providerOptions: xaiProviderOptions(reasoningEffort),
+    };
   }
-  const apiKey = await getProviderApiKey(providerRecord.id);
-  if (providerRecord.kind === 'openaiApiKey') return createOpenAIApiLanguageModel({ ...shared, apiKey });
-  return createOpenAICompatible({ name: providerRecord.name, baseURL: providerRecord.baseURL, apiKey })(modelRecord.name);
-}
 
-function languageModelProviderOptions(kind: Provider['kind'], modelRecord: Model, reasoningEffort: ReasoningEffortSetting) {
-  if (kind === 'openaiCodex') return codexProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts);
-  if (kind === 'xaiSub') return xaiProviderOptions(reasoningEffort);
-  if (kind === 'openaiApiKey') return openAIProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);
-  return reasoningProviderOptionsForModel(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name);
+  const apiKey = await getProviderApiKey(providerRecord.id);
+  if (providerRecord.kind === 'openaiApiKey') {
+    const { createOpenAIApiLanguageModel, openAIProviderOptions } = await import('../../lib/openai-runtime');
+    return {
+      model: createOpenAIApiLanguageModel({ ...shared, apiKey }),
+      providerOptions: openAIProviderOptions(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name),
+    };
+  }
+  const { createOpenAICompatible } = await import('@ai-sdk/openai-compatible');
+  return {
+    model: createOpenAICompatible({ name: providerRecord.name, baseURL: providerRecord.baseURL, apiKey })(modelRecord.name),
+    providerOptions: reasoningProviderOptionsForModel(reasoningEffort, modelRecord.supportedReasoningEfforts, modelRecord.name),
+  };
 }
 
 async function readBrowserJsEnabled() {
