@@ -1,8 +1,8 @@
 <script lang="ts">
   import { Input } from '$lib/components/ui/input/index.js';
-  import Eye from 'phosphor-svelte/lib/Eye';
-  import EyeSlash from 'phosphor-svelte/lib/EyeSlash';
-  import Key from 'phosphor-svelte/lib/Key';
+  import Eye from '@lucide/svelte/icons/eye';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
+  import KeyRound from '@lucide/svelte/icons/key-round';
 
   interface Props {
     id?: string;
@@ -28,7 +28,7 @@
 </script>
 
 <div class="relative">
-  <Key class="text-muted-foreground pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2" />
+  <KeyRound class="text-muted-foreground pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2" />
   <Input
     {id}
     type={visible ? 'text' : 'password'}
@@ -44,6 +44,6 @@
     aria-label={visible ? hideLabel : showLabel}
     onclick={() => (visible = !visible)}
   >
-    {#if visible}<EyeSlash class="size-4" />{:else}<Eye class="size-4" />{/if}
+    {#if visible}<EyeOff class="size-4" />{:else}<Eye class="size-4" />{/if}
   </button>
 </div>

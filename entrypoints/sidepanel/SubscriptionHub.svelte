@@ -1,6 +1,6 @@
 <script lang="ts">
-  import CaretRight from 'phosphor-svelte/lib/CaretRight';
-  import CrownSimple from 'phosphor-svelte/lib/CrownSimple';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
+  import Crown from '@lucide/svelte/icons/crown';
   import {
     createChatgptAdapter,
     createXaiAdapter,
@@ -90,7 +90,7 @@
     style="--fx-index: 0"
   >
     <span class="bg-primary/10 text-primary grid size-10 shrink-0 place-items-center rounded-xl shadow-[inset_0_1px_0_oklch(1_0_0_/_0.45)]">
-      <CrownSimple class="size-5" weight="duotone" />
+      <Crown class="fx-icon-pop size-5" strokeWidth={1.9} />
     </span>
     <span class="min-w-0 flex-1 space-y-1">
       <span class="flex min-w-0 items-center gap-2">
@@ -101,6 +101,6 @@
       </span>
       <span class="text-muted-foreground block text-xs leading-relaxed text-pretty">{summary}</span>
     </span>
-    <CaretRight class="text-muted-foreground group-hover:text-foreground size-4 shrink-0 transition-colors" />
+    <ChevronRight class="text-muted-foreground group-hover:text-foreground size-4 shrink-0 transition-[color,translate] duration-150 ease-[var(--ease-out)] group-hover:translate-x-0.5" strokeWidth={2} />
   </button>
 {/if}

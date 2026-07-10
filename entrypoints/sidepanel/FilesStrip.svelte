@@ -1,8 +1,8 @@
 <script lang="ts">
-  import DownloadSimple from 'phosphor-svelte/lib/DownloadSimple';
-  import FileArrowDown from 'phosphor-svelte/lib/FileArrowDown';
-  import Printer from 'phosphor-svelte/lib/Printer';
-  import TrashSimple from 'phosphor-svelte/lib/TrashSimple';
+  import Download from '@lucide/svelte/icons/download';
+  import FileDown from '@lucide/svelte/icons/file-down';
+  import Printer from '@lucide/svelte/icons/printer';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import { messages, type Locale } from '$lib/sidepanel-i18n.ts';
   import type { WorkspaceFile } from '$lib/db.ts';
@@ -41,18 +41,18 @@
 </script>
 
 {#if files.length > 0}
-  <section class="shrink-0 px-3 pt-1.5" aria-label={t.title}>
+  <section class="fx-enter shrink-0 px-3 pt-1.5" aria-label={t.title}>
     <div class="flex flex-wrap items-center gap-1.5">
       {#each files as file (file.id)}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger class="hover:bg-surface-2 text-muted-foreground hover:text-foreground ring-line/60 flex max-w-[14rem] items-center gap-1.5 rounded-lg px-2 py-1 text-[11.5px] ring-1 transition-colors duration-150 ease-[var(--ease-out)]">
-          <FileArrowDown class="size-3.5 shrink-0" />
+          <FileDown class="size-3.5 shrink-0" />
           <span class="truncate">{file.name}</span>
           <span class="shrink-0 opacity-60">{formatSize(file.size)}</span>
           </DropdownMenu.Trigger>
           <DropdownMenu.Content side="top" align="start" sideOffset={6} class="min-w-36 rounded-xl p-1">
             <DropdownMenu.Item onclick={() => download(file)}>
-              <DownloadSimple class="size-3.5" />{t.download}
+              <Download class="size-3.5" />{t.download}
             </DropdownMenu.Item>
             {#if printable(file)}
               <DropdownMenu.Item onclick={() => exportPdf(file)}>
@@ -60,7 +60,7 @@
               </DropdownMenu.Item>
             {/if}
             <DropdownMenu.Item class="text-destructive" onclick={() => onDelete(file)}>
-              <TrashSimple class="size-3.5" />{t.delete}
+              <Trash2 class="size-3.5" />{t.delete}
             </DropdownMenu.Item>
           </DropdownMenu.Content>
         </DropdownMenu.Root>

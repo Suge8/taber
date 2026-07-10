@@ -1,7 +1,7 @@
 <script lang="ts">
-  import ArrowSquareOut from 'phosphor-svelte/lib/ArrowSquareOut';
-  import GlobeSimple from 'phosphor-svelte/lib/GlobeSimple';
-  import ImageIcon from 'phosphor-svelte/lib/Image';
+  import ArrowSquareOut from '@lucide/svelte/icons/external-link';
+  import GlobeSimple from '@lucide/svelte/icons/globe';
+  import ImageIcon from '@lucide/svelte/icons/image';
   import * as Dialog from '$lib/components/ui/dialog/index.js';
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
   import type { ImagePreview, SourceLink } from '$lib/sidepanel-view.ts';
@@ -69,23 +69,31 @@
 
 {#if displaySource || imagePreview}
   <section class="fx-enter shrink-0 px-3 pb-0.5 pt-1.5">
-    <div class="bg-surface ring-line/70 flex min-h-9 items-center gap-2 rounded-2xl px-2.5 py-1.5 text-[12px] shadow-[0_8px_24px_oklch(0_0_0_/_0.035)] ring-1">
+    <div class="bg-surface flex min-h-9 items-center gap-2 rounded-2xl px-2.5 py-1.5 text-[12px] ring-1 transition-[box-shadow] duration-300 {running && target ? 'ring-primary/20 shadow-[inset_0_1px_0_oklch(1_0_0_/_0.06),0_8px_28px_oklch(0_0_0_/_0.06)]' : 'ring-line/70 shadow-[0_8px_24px_oklch(0_0_0_/_0.035)]'}">
       {#if displaySource}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger class="hover:bg-surface-2 flex min-w-0 flex-1 items-center gap-2 rounded-xl px-1.5 py-1 text-left transition-[background-color,color,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.96]" aria-label={target ? targetDetailsLabel : t.title} data-smoke="controlled-target">
-            <span class="bg-surface-2 ring-line/60 relative flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-lg ring-1">
-              <GlobeSimple class="text-muted-foreground size-3" />
-              {#if displaySource.faviconUrl}
-                <img
-                  src={displaySource.faviconUrl}
-                  alt="{displaySource.domain || displaySource.label} favicon"
-                  class="absolute inset-1 size-3 rounded-[3px] object-contain"
-                  onerror={hideBrokenImage}
-                />
+            <span class="relative shrink-0">
+              <span class="bg-surface-2 ring-line/60 relative flex size-6 items-center justify-center overflow-hidden rounded-full shadow-[inset_0_1px_0_oklch(1_0_0_/_0.06)] ring-1">
+                <GlobeSimple class="text-muted-foreground size-3.5" />
+                {#if displaySource.faviconUrl}
+                  <img
+                    src={displaySource.faviconUrl}
+                    alt="{displaySource.domain || displaySource.label} favicon"
+                    class="absolute inset-1 size-4 rounded-full object-contain"
+                    onerror={hideBrokenImage}
+                  />
+                {/if}
+              </span>
+              {#if running && target}
+                <span class="absolute -bottom-0.5 -right-0.5 flex size-2">
+                  <span class="bg-success absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"></span>
+                  <span class="bg-success ring-surface relative inline-flex size-2 rounded-full ring-2"></span>
+                </span>
               {/if}
             </span>
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-foreground/90">{primaryLabel} · {displaySource.label}</span>
+              <span class="block truncate text-foreground/90">{#if running && target}<span class="fx-shimmer-text font-semibold">{primaryLabel}</span>{:else}{primaryLabel}{/if} · {displaySource.label}</span>
               <span class="block truncate text-[10.5px] text-muted-foreground">{sourceSubtitle(displaySource)}</span>
             </span>
             {#if otherSources.length > 0}<span class="text-muted-foreground shrink-0">{t.sourceCount(otherSources.length)}</span>{/if}

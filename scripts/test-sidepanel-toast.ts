@@ -56,29 +56,29 @@ for (const icon of ['browser', 'database', 'model', 'task']) {
 const browserWarning = await renderToastStack([{ id: 1, tone: 'warning', icon: 'browser', text: 'Select an http/https page first' }]);
 assert.match(browserWarning, /fixed inset-x-3 top-3/, 'toast stack should render at the top of the viewport');
 assert.match(browserWarning, /role="alert"/, 'warning toast should use alert semantics');
-assert.match(browserWarning, /data-icon="GlobeSimple"/, 'browser toast should render the browser icon');
+assert.match(browserWarning, /data-icon="Globe"/, 'browser toast should render the browser icon');
 assert.match(browserWarning, /Select an http\/https page first/, 'toast should render the notice text');
 
 const taskError = await renderToastStack([{ id: 2, tone: 'error', icon: 'task', text: 'Task failed' }]);
 assert.match(taskError, /role="alert"/, 'error toast should use alert semantics');
-assert.match(taskError, /data-icon="Sparkle"/, 'task toast should render the task icon');
+assert.match(taskError, /data-icon="Sparkles"/, 'task toast should render the task icon');
 assert.match(taskError, /Task failed/, 'task toast should render the notice text');
 
 async function renderToastStack(items: Array<{ id: number; tone: string; text: string; icon?: string }>) {
   mkdirSync('.tmp', { recursive: true });
   const source = toastStack
-    .replace(/^\s*import (CheckCircle|Database|GlobeSimple|Info|Robot|Sparkle|Warning|XCircle) from 'phosphor-svelte\/lib\/[^']+';\n/gm, '')
+    .replace(/^\s*import (Bot|CircleCheckBig|CircleX|Database|Globe|Info|Sparkles|TriangleAlert) from '@lucide\/svelte\/icons\/[^']+';\n/gm, '')
     .replace("  import type { ToastNotice, ToastTone } from './toast.ts';\n", [
       "  type ToastTone = 'success' | 'error' | 'warning' | 'info';",
       "  type ToastNotice = { id: number; tone: ToastTone; text: string; icon?: ToastTone | 'browser' | 'database' | 'model' | 'task' };",
-      "  const CheckCircle = icon('CheckCircle');",
+      "  const Bot = icon('Bot');",
+      "  const CircleCheckBig = icon('CircleCheckBig');",
+      "  const CircleX = icon('CircleX');",
       "  const Database = icon('Database');",
-      "  const GlobeSimple = icon('GlobeSimple');",
+      "  const Globe = icon('Globe');",
       "  const Info = icon('Info');",
-      "  const Robot = icon('Robot');",
-      "  const Sparkle = icon('Sparkle');",
-      "  const Warning = icon('Warning');",
-      "  const XCircle = icon('XCircle');",
+      "  const Sparkles = icon('Sparkles');",
+      "  const TriangleAlert = icon('TriangleAlert');",
       "  function icon(name: string) { return ($$renderer: { push: (html: string) => void }, props: { class?: string }) => { $$renderer.push(`<svg data-icon=\"${name}\" class=\"${props.class ?? ''}\"></svg>`); }; }",
       '',
     ].join('\n'));

@@ -1,14 +1,15 @@
 <script lang="ts">
   import { fly } from 'svelte/transition';
-  import { cubicOut } from 'svelte/easing';
-  import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
-  import Database from 'phosphor-svelte/lib/Database';
-  import GlobeSimple from 'phosphor-svelte/lib/GlobeSimple';
-  import Info from 'phosphor-svelte/lib/Info';
-  import Robot from 'phosphor-svelte/lib/Robot';
-  import Sparkle from 'phosphor-svelte/lib/Sparkle';
-  import Warning from 'phosphor-svelte/lib/Warning';
-  import XCircle from 'phosphor-svelte/lib/XCircle';
+  import { flip } from 'svelte/animate';
+  import { cubicOut, quintOut } from 'svelte/easing';
+  import Bot from '@lucide/svelte/icons/bot';
+  import CircleCheckBig from '@lucide/svelte/icons/circle-check-big';
+  import CircleX from '@lucide/svelte/icons/circle-x';
+  import Database from '@lucide/svelte/icons/database';
+  import Globe from '@lucide/svelte/icons/globe';
+  import Info from '@lucide/svelte/icons/info';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
   import type { ToastNotice, ToastTone } from './toast.ts';
 
   interface Props {
@@ -19,13 +20,13 @@
 
   function iconFor(item: ToastNotice) {
     const icon = item.icon ?? item.tone;
-    if (icon === 'browser') return GlobeSimple;
+    if (icon === 'browser') return Globe;
     if (icon === 'database') return Database;
-    if (icon === 'model') return Robot;
-    if (icon === 'task') return Sparkle;
-    if (icon === 'success') return CheckCircle;
-    if (icon === 'error') return XCircle;
-    if (icon === 'warning') return Warning;
+    if (icon === 'model') return Bot;
+    if (icon === 'task') return Sparkles;
+    if (icon === 'success') return CircleCheckBig;
+    if (icon === 'error') return CircleX;
+    if (icon === 'warning') return TriangleAlert;
     return Info;
   }
 
@@ -49,11 +50,13 @@
     {@const Icon = iconFor(item)}
     <div
       role={item.tone === 'error' || item.tone === 'warning' ? 'alert' : 'status'}
-      class="text-foreground pointer-events-auto flex max-w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-2xl px-3 py-2.5 text-[12.5px] shadow-[0_18px_50px_oklch(0_0_0_/_0.14)] ring-1 backdrop-blur-md {toneSurfaceClass(item.tone)}"
-      transition:fly={{ y: -8, duration: 180, easing: cubicOut }}
+      class="text-foreground pointer-events-auto flex max-w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-2xl px-3.5 py-3 text-[13px] shadow-[0_18px_50px_oklch(0_0_0_/_0.14)] ring-1 backdrop-blur-md {toneSurfaceClass(item.tone)}"
+      in:fly={{ y: -10, duration: 220, easing: quintOut }}
+      out:fly={{ y: -6, duration: 150, easing: cubicOut }}
+      animate:flip={{ duration: 200, easing: cubicOut }}
     >
-      <span class="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full {toneIconClass(item.tone)}">
-        <Icon class="size-3.5" weight="duotone" />
+      <span class="mt-0.5 grid size-6 shrink-0 place-items-center rounded-full {toneIconClass(item.tone)}">
+        <Icon class="size-4" strokeWidth={1.9} />
       </span>
       <span class="min-w-0 flex-1 text-pretty leading-relaxed">{item.text}</span>
     </div>

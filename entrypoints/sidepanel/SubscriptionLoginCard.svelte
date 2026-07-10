@@ -2,10 +2,10 @@
   import type { Component } from 'svelte';
   import { Button } from '$lib/components/ui/button/index.js';
   import { Input } from '$lib/components/ui/input/index.js';
-  import ArrowClockwise from 'phosphor-svelte/lib/ArrowClockwise';
-  import SignIn from 'phosphor-svelte/lib/SignIn';
-  import SignOut from 'phosphor-svelte/lib/SignOut';
-  import Sparkle from 'phosphor-svelte/lib/Sparkle';
+  import ArrowClockwise from '@lucide/svelte/icons/refresh-cw';
+  import SignIn from '@lucide/svelte/icons/log-in';
+  import SignOut from '@lucide/svelte/icons/log-out';
+  import Sparkle from '@lucide/svelte/icons/sparkles';
   import {
     mapOAuthLoginError,
     subscriptionCopy,

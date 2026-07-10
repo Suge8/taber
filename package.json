@@ -62,7 +62,6 @@
     "@tailwindcss/vite": "^4.3.1",
     "@wxt-dev/module-svelte": "^2.0.5",
     "fake-indexeddb": "^6.2.5",
-    "phosphor-svelte": "^3.1.0",
     "svelte": "^5.56.2",
     "svelte-check": "4.7.1",
     "tailwindcss": "^4.3.1",

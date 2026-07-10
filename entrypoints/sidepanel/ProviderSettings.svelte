@@ -4,19 +4,19 @@
   import { Input } from '$lib/components/ui/input/index.js';
   import { Label } from '$lib/components/ui/label/index.js';
   import * as Select from '$lib/components/ui/select/index.js';
-  import ArrowClockwise from 'phosphor-svelte/lib/ArrowClockwise';
-  import CaretDown from 'phosphor-svelte/lib/CaretDown';
-  import Check from 'phosphor-svelte/lib/Check';
-  import CheckCircle from 'phosphor-svelte/lib/CheckCircle';
-  import IdentificationCard from 'phosphor-svelte/lib/IdentificationCard';
-  import Key from 'phosphor-svelte/lib/Key';
-  import LinkSimple from 'phosphor-svelte/lib/LinkSimple';
-  import PencilSimple from 'phosphor-svelte/lib/PencilSimple';
-  import Plus from 'phosphor-svelte/lib/Plus';
-  import Stack from 'phosphor-svelte/lib/Stack';
-  import TestTube from 'phosphor-svelte/lib/TestTube';
-  import Trash from 'phosphor-svelte/lib/Trash';
-  import X from 'phosphor-svelte/lib/X';
+  import ArrowClockwise from '@lucide/svelte/icons/refresh-cw';
+  import CaretDown from '@lucide/svelte/icons/chevron-down';
+  import Check from '@lucide/svelte/icons/check';
+  import CheckCircle from '@lucide/svelte/icons/circle-check-big';
+  import IdentificationCard from '@lucide/svelte/icons/id-card';
+  import Key from '@lucide/svelte/icons/key-round';
+  import LinkSimple from '@lucide/svelte/icons/link';
+  import PencilSimple from '@lucide/svelte/icons/pencil';
+  import Plus from '@lucide/svelte/icons/plus';
+  import Stack from '@lucide/svelte/icons/layers-2';
+  import TestTube from '@lucide/svelte/icons/test-tube-diagonal';
+  import Trash from '@lucide/svelte/icons/trash-2';
+  import X from '@lucide/svelte/icons/x';
   import {
     getProviderApiKey,
     listProvidersWithModels,
@@ -584,7 +584,7 @@
         onclick={startCreateProvider}
       >
         <span class="bg-surface-2 text-foreground grid size-10 shrink-0 place-items-center rounded-xl shadow-[inset_0_1px_0_oklch(1_0_0_/_0.45)]">
-          <Key class="size-5" weight="duotone" />
+          <Key class="size-5" strokeWidth={1.9} />
         </span>
         <span class="min-w-0 flex-1 space-y-1">
           <span class="flex min-w-0 items-center gap-2">
@@ -663,7 +663,7 @@
       </div>
       <SettingsActionBar>
         <Button type="button" onclick={() => saveEdit(editingProvider)} disabled={saving} class="h-9 min-w-28 rounded-xl px-5 shadow-none">
-          {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" weight="duotone" />{/if}{t.save}
+          {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" strokeWidth={1.9} />{/if}{t.save}
         </Button>
       </SettingsActionBar>
       </section>
@@ -786,7 +786,7 @@
         </div>
         <SettingsActionBar bind:ref={createActionBarElement}>
           <Button type="button" data-smoke="save-provider" onclick={handleCreate} disabled={saving} class="h-9 min-w-28 rounded-xl px-5 shadow-none">
-            {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" weight="duotone" />{/if}{t.connect}
+            {#if saving}<ArrowClockwise class="mr-1.5 size-4 animate-spin" />{:else}<CheckCircle class="mr-1.5 size-4" strokeWidth={1.9} />{/if}{t.connect}
           </Button>
         </SettingsActionBar>
       </div>
