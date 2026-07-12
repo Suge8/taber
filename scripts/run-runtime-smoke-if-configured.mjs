@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { findRuntimeBrowserApp, prepareRuntimeBrowser } from './runtime-browser.mjs';
+import { markRuntimeSmokeBuild } from './runtime-smoke-guard.mjs';
 
 const smokeCommands = {
   extension: [process.execPath, ['scripts/smoke-extension.mjs', '--require-runtime-extension-loaded']],
@@ -45,6 +46,7 @@ if (!configured && !browserApp) {
 const releaseLock = await acquireRuntimeLock();
 if (!process.env.TABER_EXTENSION_DIR) process.env.TABER_EXTENSION_DIR = runtimeExtensionDir;
 let runtime;
+let runtimeBuildMarker;
 try {
   await run('pnpm', ['build:chrome'], {
     TABER_ENABLE_DEBUGGER: '',
@@ -52,6 +54,7 @@ try {
     TABER_OUT_DIR_TEMPLATE: runtimeOutDirTemplate,
   });
   await assertProductionBuildOutput(process.env.TABER_EXTENSION_DIR);
+  runtimeBuildMarker = await markRuntimeSmokeBuild(process.env.TABER_EXTENSION_DIR, randomUUID());
   runtime = await prepareRuntimeBrowser({ required, allowLaunch: true });
   if (runtime.skipped) {
     console.info(runtime.reason);
@@ -61,6 +64,7 @@ try {
       TABER_CDP_ORIGIN: runtime.cdpOrigin,
       TABER_EXTENSION_ID: runtime.extensionId,
       TABER_EXTENSION_DIR: process.env.TABER_EXTENSION_DIR,
+      TABER_RUNTIME_SMOKE_VERSION_NAME: runtimeBuildMarker.versionName,
     };
     for (const smokeName of smokeNames) await runSmoke(smokeName, env);
   }
@@ -68,7 +72,11 @@ try {
   try {
     await runtime?.close();
   } finally {
-    await releaseLock();
+    try {
+      await runtimeBuildMarker?.restore();
+    } finally {
+      await releaseLock();
+    }
   }
 }
 

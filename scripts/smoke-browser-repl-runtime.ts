@@ -49,7 +49,7 @@ try {
 
   const tabId = await findTabId(extensionCdp, fixtureUrl);
   await assertSidepanelLocaleRuntime(extensionCdp, tabId, runtime.extensionId);
-  await assertRuntimeTargetLock(browserCdp, runtime.cdpOrigin, extensionCdp, pageCdp, tabId);
+  const foregroundModeReport = await assertRuntimeTargetLock(browserCdp, runtime.cdpOrigin, extensionCdp, pageCdp, tabId);
   let observed = await runPageCommand(extensionCdp, tabId, { helper: 'observe', args: [] });
   assert.equal(observed.summary.title, 'BrowserRepl Smoke');
   assert.equal(typeof findElement(observed, 'input').ref.stableId, 'string');
@@ -126,6 +126,7 @@ try {
   assert.equal(timeoutResult.ok, false);
   assert.match(String(timeoutResult.error), /waitFor timed out after 20ms/);
 
+  console.info(JSON.stringify({ foregroundMode: foregroundModeReport }, null, 2));
   console.info('browser repl runtime smoke passed');
 } finally {
   pageCdp?.close();
@@ -239,6 +240,7 @@ async function assertSidepanelLocaleRuntime(extensionCdp: CdpClient, targetTabId
     await submitSidepanelPrompt(extensionCdp, prompt);
     const started = await waitForStartedEventByPrompt(extensionCdp, prompt);
     assert.equal(started.payload?.instructionsVersion, AGENT_INSTRUCTIONS_VERSION, `task.started must include instructionsVersion: ${AGENT_INSTRUCTIONS_VERSION}`);
+    assert.equal(started.payload?.foregroundMode, false, 'sidepanel default mode must be captured in task.started');
     const sessionId = readPositiveInteger(started.sessionId, 'completion smoke sessionId');
     const taskId = readString(started.payload?.taskId, 'completion smoke taskId');
     assertModelRequest(await completingServer.readRequest(), 'en');
@@ -350,9 +352,10 @@ async function assertRuntimeTargetLock(browserCdp: CdpClient, cdpOrigin: string,
     const windowId = readPositiveInteger(firstTab.windowId, 'first tab windowId');
 
     await activateTab(extensionCdp, firstTabId);
-    const zhStarted = await runtimeMessage(extensionCdp, { type: 'taber.background.startTask', prompt: 'Locale zh runtime smoke', windowId, locale: 'zh' });
+    const zhStarted = await runtimeMessage(extensionCdp, { type: 'taber.background.startTask', prompt: 'Locale zh runtime smoke', foregroundMode: false, windowId, locale: 'zh' });
     const zhSessionId = readPositiveInteger((zhStarted as Record<string, unknown>).sessionId, 'zh sessionId');
-    await waitForAgentEvent(extensionCdp, zhSessionId, 'task.started');
+    const zhStartedEvent = await waitForAgentEvent(extensionCdp, zhSessionId, 'task.started');
+    assert.equal(zhStartedEvent.payload?.foregroundMode, false);
     assertModelRequest(await modelServer.readRequest(), 'zh');
     await runtimeMessage(extensionCdp, { type: 'taber.background.stopTask' });
     await waitForAgentEvent(extensionCdp, zhSessionId, 'task.cancelled');
@@ -365,24 +368,47 @@ async function assertRuntimeTargetLock(browserCdp: CdpClient, cdpOrigin: string,
     const secondTab = await getTab(extensionCdp, secondTabId);
 
     await activateTab(extensionCdp, firstTabId);
-    const started = await runtimeMessage(extensionCdp, { type: 'taber.background.startTask', prompt: 'Target lock runtime smoke', windowId, locale: 'en' });
+    const started = await runtimeMessage(extensionCdp, { type: 'taber.background.startTask', prompt: 'Target lock runtime smoke', foregroundMode: false, windowId, locale: 'en' });
     const sessionId = readPositiveInteger((started as Record<string, unknown>).sessionId, 'sessionId');
     const startedEvent = await waitForAgentEvent(extensionCdp, sessionId, 'task.started');
     assert.equal(startedEvent.payload?.context?.id, firstTabId, 'task.started must lock the active tab at send time');
     assert.equal(startedEvent.payload?.context?.url, firstTab.url);
+    assert.equal(startedEvent.payload?.foregroundMode, false, 'task mode must be an immutable start snapshot');
     assertModelRequest(await modelServer.readRequest(), 'en');
 
     await activateTab(extensionCdp, secondTabId);
     const activeTab = await runtimeMessage(extensionCdp, { type: 'taber.background.currentTab', windowId }) as Record<string, unknown>;
     assert.equal(activeTab.id, secondTabId, 'manual tab switch should change browser active tab');
-    const lockedCurrent = await runtimeMessage(extensionCdp, { type: 'taber.navigate.request', windowId, targetTabId: firstTabId, input: { action: 'currentTab' } }) as Record<string, any>;
+    const lockedCurrent = await runtimeMessage(extensionCdp, { type: 'taber.navigate.request', foregroundMode: false, windowId, targetTabId: firstTabId, input: { action: 'currentTab' } }) as Record<string, any>;
     assert.equal(lockedCurrent.tab?.id, firstTabId, 'navigate.currentTab with task target must ignore manual active-tab switches');
     await assertNoAgentEvent(extensionCdp, sessionId, 'task.targetChanged', 300, 'manual active-tab switch must not emit targetChanged');
+
+    const focusedBefore = await isWindowFocused(extensionCdp, windowId);
+    await runTaskScriptingCommand(extensionCdp, firstTabId, false);
+    const backgroundModeKeptActiveTab = await activeTabId(extensionCdp, windowId) === secondTabId;
+    await runTaskScriptingCommand(extensionCdp, firstTabId, true);
+    const foregroundModeActivatedTarget = await activeTabId(extensionCdp, windowId) === firstTabId;
+    await activateTab(extensionCdp, secondTabId);
+    await runTaskScriptingCommand(extensionCdp, firstTabId, true);
+    const foregroundModeReactivatedAfterUserSwitch = await activeTabId(extensionCdp, windowId) === firstTabId;
+    const focusedAfter = await isWindowFocused(extensionCdp, windowId);
+    await activateTab(extensionCdp, secondTabId);
 
     const switched = await runtimeMessage(extensionCdp, { type: 'taber.agent.switchTarget', windowId, targetTabId: secondTabId, targetTab: secondTab, reason: 'userCurrentTab' }) as Record<string, unknown>;
     assert.equal(switched.changed, true, 'explicit user target switch should update the running task');
     const changedEvent = await waitForAgentEvent(extensionCdp, sessionId, 'task.targetChanged');
     assert.equal(changedEvent.payload?.toTabId, secondTabId);
+    assert.equal(backgroundModeKeptActiveTab, true, 'background mode must leave the user-selected tab active');
+    assert.equal(foregroundModeActivatedTarget, true, 'foreground mode must activate the target before a page command');
+    assert.equal(foregroundModeReactivatedAfterUserSwitch, true, 'the next foreground page command must reactivate the immutable target');
+    assert.equal(focusedAfter, focusedBefore, 'tab activation must not change Chrome window focus');
+    return {
+      backgroundModeKeptActiveTab,
+      foregroundModeActivatedTarget,
+      foregroundModeReactivatedAfterUserSwitch,
+      windowFocusUnchanged: focusedAfter === focusedBefore,
+      taskStartedCapturedMode: startedEvent.payload?.foregroundMode === false,
+    };
   } finally {
     await runtimeMessage(extensionCdp, { type: 'taber.background.stopTask' }).catch(() => undefined);
     await activateTab(extensionCdp, firstTabId).catch(() => undefined);
@@ -567,6 +593,29 @@ async function getTab(cdp: CdpClient, tabId: number) {
 
 async function activateTab(cdp: CdpClient, tabId: number) {
   await runtimeMessage(cdp, { type: 'taber.chromeApi.request', action: 'tabs.update', args: [tabId, { active: true }] });
+}
+
+async function activeTabId(cdp: CdpClient, windowId: number) {
+  const tabs = await runtimeMessage(cdp, { type: 'taber.chromeApi.request', action: 'tabs.query', args: [{ active: true, windowId }] }) as Array<{ id?: number }>;
+  return tabs[0]?.id;
+}
+
+async function isWindowFocused(cdp: CdpClient, windowId: number) {
+  return evaluateStable(cdp, `new Promise((resolve, reject) => chrome.windows.get(${windowId}, (window) => {
+    const error = chrome.runtime.lastError;
+    if (error) reject(new Error(error.message));
+    else resolve(Boolean(window.focused));
+  }))`);
+}
+
+async function runTaskScriptingCommand(cdp: CdpClient, tabId: number, foregroundMode: boolean) {
+  return runtimeMessage(cdp, {
+    type: 'taber.browserRepl.scriptingCommand',
+    tabId,
+    targetTabId: tabId,
+    foregroundMode,
+    command: { helper: 'observe', args: [] },
+  });
 }
 
 async function waitForAgentEvent(cdp: CdpClient, sessionId: number, eventType: string) {

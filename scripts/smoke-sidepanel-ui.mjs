@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { connectCdp, connectTarget, delay, evaluate, evaluateStable, fetchJson, hasCdpEndpoint, waitForTarget } from './cdp-client.mjs';
 import { prepareRuntimeBrowser } from './runtime-browser.mjs';
+import { assertRuntimeSmokeTarget, RUNTIME_SMOKE_PAGE } from './runtime-smoke-guard.mjs';
 
 const extensionPath = resolve('.output/chrome-mv3');
 const manifest = JSON.parse(readFileSync(resolve(extensionPath, 'manifest.json'), 'utf8'));
@@ -20,12 +21,16 @@ try {
   sidepanelUrl = `chrome-extension://${runtime.extensionId}/${sidepanelPath}${sidepanelPath.includes('?') ? '&' : '?'}taber-smoke=1`;
   const version = await fetchJson(`${runtime.cdpOrigin}/json/version`);
   browserCdp = await connectCdp(version.webSocketDebuggerUrl);
-  pageTarget = await browserCdp.send('Target.createTarget', { url: sidepanelUrl });
-  const sidePanelOpenAttempt = await trySidePanelOpen();
+  pageTarget = await browserCdp.send('Target.createTarget', { url: `chrome-extension://${runtime.extensionId}/${RUNTIME_SMOKE_PAGE}` });
   const page = await waitForTarget(runtime.cdpOrigin, (target) => target.id === pageTarget.targetId && hasCdpEndpoint(target), 15_000);
   pageCdp = await connectTarget(page);
   await pageCdp.send('Runtime.enable');
   await pageCdp.send('Page.enable');
+  // Must pass before loading App: later phases delete IndexedDB and revoke host permissions.
+  const actualVersionName = await evaluateStable(pageCdp, 'globalThis.chrome?.runtime?.getManifest?.().version_name');
+  assertRuntimeSmokeTarget(process.env.TABER_RUNTIME_SMOKE_VERSION_NAME, actualVersionName);
+  const sidePanelOpenAttempt = await trySidePanelOpen();
+  await navigatePage(pageCdp, sidepanelUrl);
   await pageCdp.send('Emulation.setDeviceMetricsOverride', { width: 360, height: 900, deviceScaleFactor: 1, mobile: false });
   await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   await pageCdp.send('Emulation.setLocaleOverride', { locale: 'en-US' }).catch(() => undefined);
@@ -76,11 +81,12 @@ try {
     await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     const recoveryReport = await evaluateStable(pageCdp, recoveryReportExpression());
     const i18nReport = await runI18nPhase(pageCdp);
+    const foregroundModeReport = await runForegroundModePhase(pageCdp);
     await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     const historyReport = await runHistoryPhase(pageCdp);
     const multiTurnReport = await runMultiTurnPhase(pageCdp);
 
-    const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, idleSources: idleSourcesReport, recovery: recoveryReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
+    const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, idleSources: idleSourcesReport, recovery: recoveryReport, foregroundMode: foregroundModeReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
     console.log(JSON.stringify(output, null, 2));
     assertAll('onboarding', onboardingReport);
     assertAll('browserControlExistingModel', browserControlExistingModelReport);
@@ -88,6 +94,7 @@ try {
     assertAll('targetSwitch', targetSwitchReport);
     assertAll('idleSources', idleSourcesReport);
     assertAll('recovery', recoveryReport);
+    assertAll('foregroundMode', foregroundModeReport);
     assertAll('i18n', i18nReport);
     assertAll('history', historyReport);
     assertAll('multiTurn', multiTurnReport);
@@ -491,6 +498,297 @@ async function waitForSourceBarMotion(cdp) {
   }))`);
 }
 
+async function runForegroundModePhase(cdp) {
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+  await waitForForegroundMode(cdp, false, 'Follow AI actions');
+  const initial = await readForegroundModeUi(cdp);
+  const englishLayout = await readForegroundModeLayout(cdp);
+  const englishOffTooltip = await readForegroundModeTooltip(cdp);
+  const englishHover = await readForegroundModeHover(cdp);
+  await setSmokeTheme(cdp, 'light');
+  await waitForForegroundModeMotion(cdp);
+  await captureForegroundModeArtifact(cdp, 'en-light-off.png');
+
+  await beginForegroundModeComposerCapture(cdp);
+  await toggleForegroundModeWithKeyboard(cdp, 'Enter');
+  await waitForForegroundMode(cdp, true, 'Follow AI actions');
+  const savedOn = await readForegroundModeSetting(cdp);
+  const composerCapture = await finishForegroundModeComposerCapture(cdp);
+  const englishOnTooltip = await readForegroundModeTooltip(cdp);
+  const normalMotion = await readForegroundModeUi(cdp);
+  await setSmokeTheme(cdp, 'dark');
+  await waitForForegroundModeMotion(cdp);
+  await captureForegroundModeArtifact(cdp, 'en-dark-on.png');
+  await evaluate(cdp, `window.__taberStartMessages = []`);
+  await submitPrompt(cdp, 'Foreground mode on prompt');
+  await evaluateStable(cdp, waitForCapturedStartExpression(1));
+  await evaluateStable(cdp, waitForTextExpression('Foreground mode on prompt done.'));
+  const startOn = await evaluate(cdp, `window.__taberStartMessages?.at(-1)?.foregroundMode`);
+
+  await reloadSidepanel(cdp);
+  await waitForForegroundMode(cdp, true, 'Follow AI actions');
+  const persistedOn = await readForegroundModeUi(cdp);
+  await setLocaleInPage(cdp, 'zh');
+  await waitForForegroundMode(cdp, true, '跟随 AI 操作');
+  const chineseLayout = await readForegroundModeLayout(cdp);
+  const chineseOnTooltip = await readForegroundModeTooltip(cdp);
+  await setSmokeTheme(cdp, 'light');
+  await waitForForegroundModeMotion(cdp);
+  await captureForegroundModeArtifact(cdp, 'zh-light-on.png');
+
+  await toggleForegroundModeWithKeyboard(cdp, 'Space');
+  await waitForForegroundMode(cdp, false, '跟随 AI 操作');
+  const savedOff = await readForegroundModeSetting(cdp);
+  const chineseOffTooltip = await readForegroundModeTooltip(cdp);
+  await setSmokeTheme(cdp, 'dark');
+  await waitForForegroundModeMotion(cdp);
+  await captureForegroundModeArtifact(cdp, 'zh-dark-off.png');
+  await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  const reducedMotion = await readForegroundModeUi(cdp);
+
+  await reloadSidepanel(cdp);
+  await waitForForegroundMode(cdp, false, '跟随 AI 操作');
+  await evaluateStable(cdp, waitForTextExpression('Foreground mode on prompt done.'));
+  const persistedOff = await readForegroundModeUi(cdp);
+  await setLocaleInPage(cdp, 'en');
+  await waitForForegroundMode(cdp, false, 'Follow AI actions');
+  await setSmokeTheme(cdp, 'system');
+  await evaluate(cdp, `window.__taberStartMessages = []`);
+  await submitPrompt(cdp, 'Foreground mode off prompt');
+  await evaluateStable(cdp, waitForCapturedStartExpression(1));
+  await evaluateStable(cdp, waitForTextExpression('Foreground mode off prompt done.'));
+  const startOff = await evaluate(cdp, `window.__taberStartMessages?.at(-1)?.foregroundMode`);
+
+  return {
+    defaultsOff: initial.pressed === false,
+    staticAccessibleName: initial.label === 'Follow AI actions',
+    offIconState: initial.activeIcons === 1,
+    englishOffTooltip: englishOffTooltip.text === 'AI works on the page in the background',
+    englishTooltipEscape: englishOffTooltip.escaped,
+    hoverDrawsIcon: englishHover.drawReady && englishHover.drawsFrame && englishHover.drawsStroke,
+    hoverMotionEnabled: englishHover.lifted && englishHover.hasShadow && englishHover.transitionMs >= 100,
+    toggleKeepsComposerInteractive: composerCapture.mutations.length === 0,
+    togglePreservesComposerFocus: composerCapture.modeFocused,
+    toggleAnimatesComposerShadow: composerCapture.animationNames.includes('fxComposerModeOn'),
+    stateUsesIconOnly: normalMotion.backgroundColor === initial.backgroundColor,
+    enterTogglesOn: normalMotion.pressed === true,
+    persistedOn: savedOn === true && persistedOn.pressed === true,
+    startTaskCarriesOn: startOn === true,
+    englishOnTooltip: englishOnTooltip.text === 'The page follows AI actions',
+    normalMotionEnabled: normalMotion.transitionMs >= 100,
+    asymmetricStateMotion: normalMotion.activeTransitionMs >= 200 && normalMotion.inactiveTransitionMs <= 120,
+    chineseAccessibleName: persistedOff.label === '跟随 AI 操作',
+    chineseOnTooltip: chineseOnTooltip.text === '页面会跟随 AI 操作视角',
+    spaceTogglesOff: reducedMotion.pressed === false,
+    persistedOff: savedOff === false && persistedOff.pressed === false,
+    startTaskCarriesOff: startOff === false,
+    chineseOffTooltip: chineseOffTooltip.text === 'AI 在页面后台进行操作',
+    chineseTooltipEscape: chineseOffTooltip.escaped,
+    reducedMotionStopsTransition: reducedMotion.transitionMs < 1,
+    englishLayout: englishLayout.modeAfterReasoning && englishLayout.noReasoningWrap && englishLayout.noSubmitOverlap && englishLayout.size32 && englishLayout.noHorizontalOverflow,
+    chineseLayout: chineseLayout.modeAfterReasoning && chineseLayout.noReasoningWrap && chineseLayout.noSubmitOverlap && chineseLayout.size32 && chineseLayout.noHorizontalOverflow,
+  };
+}
+
+async function readForegroundModeUi(cdp) {
+  return evaluate(cdp, `(() => {
+    const button = document.querySelector('[data-foreground-mode]');
+    if (!button) throw new Error('foreground mode button not found');
+    const icons = [...button.querySelectorAll('.fx-mode-icon')];
+    const durationMs = (icon) => Math.max(0, ...getComputedStyle(icon).transitionDuration.split(',').map((value) => Number.parseFloat(value) * (value.includes('ms') ? 1 : 1000)));
+    const activeIcon = button.querySelector('.fx-mode-icon.is-active');
+    const inactiveIcon = icons.find((icon) => icon !== activeIcon);
+    return {
+      pressed: button.getAttribute('aria-pressed') === 'true',
+      label: button.getAttribute('aria-label'),
+      activeIcons: icons.filter((icon) => Number.parseFloat(getComputedStyle(icon).opacity) > 0.9).length,
+      transitionMs: Math.max(0, ...icons.map(durationMs)),
+      activeTransitionMs: activeIcon ? durationMs(activeIcon) : 0,
+      inactiveTransitionMs: inactiveIcon ? durationMs(inactiveIcon) : 0,
+      backgroundColor: getComputedStyle(button).backgroundColor,
+    };
+  })()`);
+}
+
+async function readForegroundModeLayout(cdp) {
+  return evaluate(cdp, `(() => {
+    const mode = document.querySelector('[data-foreground-mode]');
+    const toolbar = mode?.closest('[data-slot="prompt-input-toolbar"]') || mode?.closest('form');
+    const buttons = [...(toolbar?.querySelectorAll('button') || [])];
+    const modeIndex = buttons.indexOf(mode);
+    const reasoning = buttons[modeIndex - 1];
+    const submit = toolbar?.querySelector('[data-prompt-input-submit]');
+    if (!mode || !reasoning || !submit) throw new Error('foreground mode layout controls not found');
+    const modeRect = mode.getBoundingClientRect();
+    const reasoningRect = reasoning.getBoundingClientRect();
+    const submitRect = submit.getBoundingClientRect();
+    return {
+      modeAfterReasoning: modeRect.left >= reasoningRect.right - 1,
+      noReasoningWrap: reasoningRect.height <= 40,
+      noSubmitOverlap: modeRect.right <= submitRect.left + 1,
+      size32: Math.abs(modeRect.width - 32) <= 1 && Math.abs(modeRect.height - 32) <= 1,
+      noHorizontalOverflow: !(document.documentElement.scrollWidth > innerWidth || document.body.scrollWidth > innerWidth),
+    };
+  })()`);
+}
+
+async function readForegroundModeHover(cdp) {
+  await evaluate(cdp, `document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
+  const center = await evaluate(cdp, `(() => {
+    const rect = document.querySelector('[data-foreground-mode]')?.getBoundingClientRect();
+    if (!rect) throw new Error('foreground mode button not found');
+    return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+  })()`);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: center.x, y: center.y });
+  const state = await evaluateStable(cdp, `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+    const button = document.querySelector('[data-foreground-mode]');
+    const icon = button?.querySelector('.fx-mode-icon.is-active');
+    if (!button || !icon) throw new Error('foreground mode hover hooks not found');
+    const animationNames = icon.getAnimations({ subtree: true }).map((animation) => animation.animationName);
+    const style = getComputedStyle(button);
+    const durations = style.transitionDuration.split(',').map((value) => Number.parseFloat(value) * (value.includes('ms') ? 1 : 1000));
+    resolve({
+      drawReady: icon.hasAttribute('data-draw-ready'),
+      drawsFrame: animationNames.includes('fxIconDrawFrame'),
+      drawsStroke: animationNames.includes('fxIconDraw'),
+      lifted: style.transform !== 'none',
+      hasShadow: style.boxShadow !== 'none',
+      transitionMs: Math.max(0, ...durations),
+    });
+  })))`);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+  await evaluateStable(cdp, `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  return state;
+}
+
+async function readForegroundModeTooltip(cdp) {
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await evaluate(cdp, `document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
+  await evaluateStable(cdp, `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  await evaluate(cdp, `(() => {
+    const button = document.querySelector('[data-foreground-mode]');
+    if (!button) throw new Error('foreground mode button not found');
+    button.focus();
+  })()`);
+  const openSelector = '[data-slot="tooltip-content"][data-state$="-open"], [data-slot="tooltip-content"][data-state="open"]';
+  const text = await evaluateStable(cdp, waitForTooltipStateExpression(openSelector, true));
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  const escaped = await evaluateStable(cdp, waitForTooltipStateExpression(openSelector, false));
+  return { text, escaped };
+}
+
+function waitForTooltipStateExpression(selector, open) {
+  return `new Promise((resolve, reject) => {
+    const read = () => document.querySelector(${JSON.stringify(selector)});
+    const finish = (observer, timeout, value) => { observer.disconnect(); clearTimeout(timeout); resolve(value); };
+    const observer = new MutationObserver(() => {
+      const content = read();
+      if (${JSON.stringify(open)} ? content : !content) finish(observer, timeout, ${JSON.stringify(open)} ? content?.textContent?.trim() : true);
+    });
+    const timeout = setTimeout(() => { observer.disconnect(); reject(new Error('tooltip did not ${open ? 'open' : 'close'}')); }, 2000);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-state'] });
+    const content = read();
+    if (${JSON.stringify(open)} ? content : !content) finish(observer, timeout, ${JSON.stringify(open)} ? content?.textContent?.trim() : true);
+  })`;
+}
+
+async function beginForegroundModeComposerCapture(cdp) {
+  await evaluate(cdp, `(() => {
+    const button = document.querySelector('[data-foreground-mode]');
+    const composer = button?.closest('.composer-shell');
+    if (!composer) throw new Error('foreground mode composer not found');
+    const mutations = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        const target = record.target;
+        mutations.push({
+          tag: target.tagName,
+          name: target.getAttribute('name') || target.getAttribute('data-foreground-mode') || target.getAttribute('data-prompt-input-submit') || '',
+          disabled: target.hasAttribute('disabled'),
+        });
+      }
+    });
+    observer.observe(composer, { subtree: true, attributes: true, attributeFilter: ['disabled'] });
+    globalThis.__taberForegroundModeComposerCapture = { mutations, observer };
+  })()`);
+}
+
+async function finishForegroundModeComposerCapture(cdp) {
+  await evaluateStable(cdp, `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  return evaluate(cdp, `(() => {
+    const capture = globalThis.__taberForegroundModeComposerCapture;
+    if (!capture) throw new Error('foreground mode composer capture was not started');
+    capture.observer.disconnect();
+    delete globalThis.__taberForegroundModeComposerCapture;
+    const composer = document.querySelector('.composer-shell');
+    return {
+      mutations: capture.mutations,
+      modeFocused: document.activeElement === document.querySelector('[data-foreground-mode]'),
+      animationNames: composer?.getAnimations().map((animation) => animation.animationName) ?? [],
+    };
+  })()`);
+}
+
+async function toggleForegroundModeWithKeyboard(cdp, key) {
+  await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+  await evaluate(cdp, `document.querySelector('[data-foreground-mode]')?.focus()`);
+  const space = key === 'Space';
+  const keyCode = space ? 32 : 13;
+  const text = space ? ' ' : '\r';
+  const event = { key: space ? ' ' : 'Enter', code: key, text, unmodifiedText: text, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode };
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyDown', ...event });
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...event, text: '', unmodifiedText: '' });
+}
+
+async function waitForForegroundMode(cdp, pressed, label) {
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const check = () => {
+      const button = document.querySelector('[data-foreground-mode]');
+      if (button?.getAttribute('aria-pressed') === ${JSON.stringify(String(pressed))} && button?.getAttribute('aria-label') === ${JSON.stringify(label)} && !button.disabled) { resolve(true); return; }
+      if (Date.now() > deadline) { reject(new Error('foreground mode state did not settle: ' + document.body.innerText.slice(0, 300))); return; }
+      requestAnimationFrame(check);
+    };
+    check();
+  })`);
+}
+
+async function readForegroundModeSetting(cdp) {
+  return evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const request = db.transaction(['settings'], 'readonly').objectStore('settings').get('foregroundMode');
+      request.onsuccess = () => { const value = request.result?.value; db.close(); resolve(value); };
+      request.onerror = () => { db.close(); reject(request.error); };
+    };
+  })`);
+}
+
+async function setSmokeTheme(cdp, theme) {
+  await evaluate(cdp, `(() => {
+    localStorage.setItem('taber.theme', ${JSON.stringify(theme)});
+    if (${JSON.stringify(theme)} === 'system') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)});
+  })()`);
+}
+
+async function waitForForegroundModeMotion(cdp) {
+  await evaluateStable(cdp, `new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+    const animations = document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity);
+    Promise.allSettled(animations.map((animation) => animation.finished)).then(() => resolve(true));
+  })))`);
+}
+
+async function captureForegroundModeArtifact(cdp, name) {
+  const artifacts = resolve('.flow/F4/artifacts');
+  mkdirSync(artifacts, { recursive: true });
+  const screenshot = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+  writeFileSync(resolve(artifacts, name), Buffer.from(screenshot.data, 'base64'));
+}
+
 async function runI18nPhase(cdp) {
   const englishReport = await evaluate(cdp, `(() => {
     const composer = document.querySelector('textarea[name="message"]');
@@ -504,7 +802,7 @@ async function runI18nPhase(cdp) {
   await evaluateStable(cdp, waitForTextExpression('Locale en prompt done.'));
   const englishStartReport = await evaluate(cdp, `(() => {
     const message = window.__taberStartMessages?.at(-1);
-    return { sidepanelSentEnglishLocale: message?.locale === 'en' && message?.prompt === 'Locale en prompt' };
+    return { sidepanelSentEnglishLocale: message?.locale === 'en' && message?.foregroundMode === false && message?.prompt === 'Locale en prompt' };
   })()`);
 
   await setLocaleInPage(cdp, 'zh');
@@ -531,7 +829,7 @@ async function runI18nPhase(cdp) {
   await evaluateStable(cdp, waitForTextExpression('Locale zh prompt done.'));
   const chineseStartReport = await evaluate(cdp, `(() => {
     const message = window.__taberStartMessages?.at(-1);
-    return { sidepanelSentChineseLocale: message?.locale === 'zh' && message?.prompt === 'Locale zh prompt' };
+    return { sidepanelSentChineseLocale: message?.locale === 'zh' && message?.foregroundMode === false && message?.prompt === 'Locale zh prompt' };
   })()`);
 
   await pageReload(cdp);
@@ -782,6 +1080,7 @@ async function runMultiTurnPhase(cdp) {
         resolve({
           sentTwoStarts: captured.length === 2,
           bothPassedCurrentSessionId: captured.every((message) => message.sessionId === 1),
+          bothUsedSavedBackgroundMode: captured.every((message) => message.foregroundMode === false),
           eventsAccumulatedInSameSession: starts.length === 2,
           didNotCreateSession: sessionReq.result.length === 2,
           timelineContinues: document.body.innerText.includes('Follow up one done.') && document.body.innerText.includes('Follow up two done.'),
@@ -846,6 +1145,22 @@ async function waitForReady(cdp) {
 
 async function pageReload(cdp) {
   await reloadSidepanel(cdp);
+}
+
+async function navigatePage(cdp, url) {
+  const loaded = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      stopListening();
+      reject(new Error('sidepanel navigation timed out'));
+    }, 5000);
+    const stopListening = cdp.on('Page.loadEventFired', () => {
+      clearTimeout(timeout);
+      stopListening();
+      resolve(true);
+    });
+  });
+  await cdp.send('Page.navigate', { url });
+  await loaded;
 }
 
 async function reloadSidepanel(cdp) {
@@ -1198,15 +1513,15 @@ function installSendMessageStubExpression() {
       open.onsuccess = () => {
         const db = open.result;
         const sessionId = message.sessionId || 999;
-        const taskId = 'stub-' + (++offset);
-        const now = Date.now() + offset * 10;
+        const taskId = 'stub-' + crypto.randomUUID();
+        const now = Date.now() + (++offset) * 10;
         const tx = db.transaction(['sessions', 'agentEvents'], 'readwrite');
         tx.objectStore('sessions').get(sessionId).onsuccess = (event) => {
           const session = event.target.result;
           if (!session) { reject(new Error('session not found: ' + sessionId)); return; }
           session.updatedAt = now;
           tx.objectStore('sessions').put(session);
-          tx.objectStore('agentEvents').add({ sessionId, type: 'task.started', payload: { taskId, prompt: message.prompt }, createdAt: now });
+          tx.objectStore('agentEvents').add({ sessionId, type: 'task.started', payload: { taskId, prompt: message.prompt, foregroundMode: message.foregroundMode }, createdAt: now });
           tx.objectStore('agentEvents').add({ sessionId, type: 'task.completed', payload: { taskId, text: message.prompt + ' done.' }, createdAt: now + 1 });
         };
         tx.oncomplete = () => resolve({ sessionId, taskId });
