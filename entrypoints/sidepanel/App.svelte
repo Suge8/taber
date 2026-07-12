@@ -5,6 +5,7 @@
   import { projectAgentEvents } from '$lib/agent-event-projection.ts';
   import { createSession, initializeDatabase, listSessions, readLatestSessionSnapshot, readSessionSnapshot, type AgentEvent, type SessionListItem, type SessionSnapshot, type WorkspaceFile } from '$lib/db.ts';
   import { MAX_FILE_BYTES, deleteSessionFile, listSessionFiles, writeSessionFile } from '$lib/workspace-files.ts';
+  import { readForegroundMode, setForegroundMode } from '$lib/foreground-mode.ts';
   import { controlledTargetFromContext, imagePreviewFromProjection, mergeLiveAgentEvent, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup, sidebarTaskViewFromProjection, sourcesFromProjection, timelineFromProjection, type SettingsTab, type SourceLink } from '$lib/sidepanel-view.ts';
   import { getReasoningEffort, getSelectedModelId, listProvidersWithModels, normalizeReasoningEffortForModel, setReasoningEffort, setSelectedModelId, type ProviderWithModels, type ReasoningEffort } from '$lib/provider-store.ts';
   import { detectLocale, localeManualStorageKey, localeStorageKey, messages, persistLocale, type Locale } from '$lib/sidepanel-i18n.ts';
@@ -43,6 +44,8 @@
   let browserControlState = $state<BrowserControlState | undefined>(undefined);
   let selectedModelId = $state<number | null>(null);
   let reasoningEffort = $state<ReasoningEffort>('default');
+  let foregroundMode = $state(false);
+  let foregroundModeSave: Promise<void> | undefined;
   let theme = $state<Theme>(readInitialTheme());
   let locale = $state<Locale>(detectRuntimeLocale());
   let settingsOpen = $state(false);
@@ -173,6 +176,7 @@
       // finish before databaseReady gates the UI open, or a fast first click on
       // Skills reads an empty table (seeding failures still open the UI).
       await seedBuiltinSkills().catch((error) => console.warn('Taber builtin skills seeding failed', error));
+      foregroundMode = await readForegroundMode();
       databaseReady = true;
       await Promise.all([refreshProviders(), refreshBrowserControl(), refreshSessions(), refreshSnapshot()]);
     } catch (error) {
@@ -309,7 +313,28 @@
     }
   }
 
+  async function handleForegroundModeChange(value: boolean) {
+    if (value === foregroundMode || foregroundModeSave) return;
+    const previous = foregroundMode;
+    foregroundMode = value;
+    const save = (async () => {
+      try {
+        await setForegroundMode(value);
+      } catch (error) {
+        foregroundMode = previous;
+        notifyProblem(error, 'error', 'browser');
+      }
+    })();
+    foregroundModeSave = save;
+    try {
+      await save;
+    } finally {
+      if (foregroundModeSave === save) foregroundModeSave = undefined;
+    }
+  }
+
   async function handleStart(text: string) {
+    await foregroundModeSave;
     if (missingModel) {
       openSettings('providers');
       return;
@@ -320,8 +345,8 @@
     }
     try {
       const message = currentSessionId === null
-        ? { type: 'taber.background.startTask', prompt: text, windowId: sidepanelWindowId, locale }
-        : { type: 'taber.background.startTask', prompt: text, sessionId: currentSessionId, windowId: sidepanelWindowId, locale };
+        ? { type: 'taber.background.startTask', prompt: text, foregroundMode, windowId: sidepanelWindowId, locale }
+        : { type: 'taber.background.startTask', prompt: text, foregroundMode, sessionId: currentSessionId, windowId: sidepanelWindowId, locale };
       const response = await sendStartTask(message);
       if (isRecord(response) && typeof response.error === 'string') throw new Error(response.error);
       liveTaskState = 'running';
@@ -618,8 +643,10 @@
         {selectedModelLabel}
         {missingModel}
         {reasoningEffort}
+        {foregroundMode}
         onSelectModel={handleSelectModel}
         onSelectReasoningEffort={handleSelectReasoningEffort}
+        onForegroundModeChange={handleForegroundModeChange}
         onMissingModel={() => openSettings('providers')}
         onSubmit={handleStart}
         onStop={handleStop}

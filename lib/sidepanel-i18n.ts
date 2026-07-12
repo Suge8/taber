@@ -60,6 +60,9 @@ const en = {
     reasoningMedium: 'Medium',
     reasoningHigh: 'High',
     reasoningXHigh: 'Extra high',
+    foregroundMode: 'Follow AI actions',
+    foregroundModeOn: 'The page follows AI actions',
+    foregroundModeOff: 'AI works on the page in the background',
   },
   quick: {
     summarize: 'Summarize',
@@ -409,6 +412,9 @@ const zh: SidepanelMessages = {
     reasoningMedium: '中',
     reasoningHigh: '高',
     reasoningXHigh: '极高',
+    foregroundMode: '跟随 AI 操作',
+    foregroundModeOn: '页面会跟随 AI 操作视角',
+    foregroundModeOff: 'AI 在页面后台进行操作',
   },
   quick: {
     summarize: '总结',

@@ -233,6 +233,40 @@
   .fx-label-swap {
     animation: fxLabelSwap var(--d-base) var(--ease-out) both;
   }
+  .fx-mode-trigger {
+    transform: translateY(0) scale(1);
+    transition-property: background-color, color, box-shadow, transform;
+    transition-duration: var(--d-base);
+    transition-timing-function: var(--ease-out);
+  }
+  .fx-mode-trigger:not(:disabled):active {
+    transform: translateY(0) scale(0.94);
+    transition-duration: var(--d-micro);
+  }
+  .fx-mode-icon {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    filter: blur(3px);
+    transform: scale(0.68) rotate(-5deg);
+    transition-property: opacity, filter, transform;
+    transition-duration: 110ms;
+    transition-timing-function: var(--ease-out);
+  }
+  .fx-mode-icon.is-active {
+    opacity: 1;
+    filter: blur(0);
+    transform: scale(1) rotate(0);
+    transition-duration: 220ms;
+    transition-timing-function: cubic-bezier(0.16, 1.18, 0.3, 1);
+  }
+  @media (hover: hover) {
+    .fx-mode-trigger:not(:disabled):hover {
+      transform: translateY(-1px) scale(1.03);
+    }
+  }
   @keyframes fxLabelSwap {
     from {
       opacity: 0;
@@ -445,10 +479,12 @@
      lib/fx-icon-draw.ts so all of them draw in sync regardless of geometry
      (the [data-draw-ready] guard keeps un-normalized icons static). */
   @media (hover: hover) {
-    :where(button, [role="button"], [data-slot="dropdown-menu-trigger"]):not(:disabled):hover .fx-icon-draw[data-draw-ready] {
+    :where(button, [role="button"], [data-slot="dropdown-menu-trigger"]):not(:disabled):hover .fx-icon-draw:not(.fx-mode-icon)[data-draw-ready],
+    [data-foreground-mode]:not(:disabled):hover .fx-mode-icon.is-active[data-draw-ready] {
       animation: fxIconDrawFrame 950ms var(--ease-out);
     }
-    :where(button, [role="button"], [data-slot="dropdown-menu-trigger"]):not(:disabled):hover .fx-icon-draw[data-draw-ready] :is(path, line, polyline, polygon, circle, rect, ellipse) {
+    :where(button, [role="button"], [data-slot="dropdown-menu-trigger"]):not(:disabled):hover .fx-icon-draw:not(.fx-mode-icon)[data-draw-ready] :is(path, line, polyline, polygon, circle, rect, ellipse),
+    [data-foreground-mode]:not(:disabled):hover .fx-mode-icon.is-active[data-draw-ready] :is(path, line, polyline, polygon, circle, rect, ellipse) {
       animation: fxIconDraw 950ms var(--ease-out);
     }
     :where(button, [role="button"], [data-slot="dropdown-menu-trigger"]):not(:disabled):hover .fx-icon-wiggle {
@@ -520,16 +556,31 @@
     min-block-size: 7rem;
     overflow: hidden;
     isolation: isolate;
+    --composer-rest-shadow: 0 10px 30px oklch(0 0 0 / 0.05);
     border-radius: 1.5rem;
     background: var(--surface);
-    box-shadow: 0 10px 30px oklch(0 0 0 / 0.05);
+    box-shadow: var(--composer-rest-shadow);
     transition-property: border-radius, background-color, box-shadow;
     transition-duration: 260ms;
     transition-timing-function: var(--ease-out);
   }
   .composer-shell:focus-within {
     --tw-ring-color: color-mix(in oklch, var(--accent) 30%, var(--line));
-    box-shadow: 0 14px 40px oklch(0 0 0 / 0.08);
+    --composer-rest-shadow: 0 14px 40px oklch(0 0 0 / 0.08);
+  }
+  .composer-shell.is-mode-on {
+    animation: fxComposerModeOn 260ms var(--ease-out);
+  }
+  .composer-shell.is-mode-off {
+    animation: fxComposerModeOff 260ms var(--ease-out);
+  }
+  @keyframes fxComposerModeOn {
+    0%, 100% { box-shadow: var(--composer-rest-shadow); }
+    48% { box-shadow: 0 17px 46px oklch(0 0 0 / 0.095); }
+  }
+  @keyframes fxComposerModeOff {
+    0%, 100% { box-shadow: var(--composer-rest-shadow); }
+    48% { box-shadow: 0 17px 46px oklch(0 0 0 / 0.095); }
   }
   .composer-shell::before {
     content: "";

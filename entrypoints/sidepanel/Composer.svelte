@@ -31,6 +31,8 @@
   import Bot from '@lucide/svelte/icons/bot';
   import BrainCircuit from '@lucide/svelte/icons/brain-circuit';
   import Check from '@lucide/svelte/icons/check';
+  import Eye from '@lucide/svelte/icons/eye';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
   import CaretDown from '@lucide/svelte/icons/chevron-down';
   import GlobeSimple from '@lucide/svelte/icons/globe';
   import MousePointerClick from '@lucide/svelte/icons/mouse-pointer-click';
@@ -56,8 +58,10 @@
     selectedModelLabel: string;
     missingModel: boolean;
     reasoningEffort: ReasoningEffort;
+    foregroundMode: boolean;
     onSelectModel: (id: number) => void | Promise<void>;
     onSelectReasoningEffort: (value: ReasoningEffort) => void | Promise<void>;
+    onForegroundModeChange: (value: boolean) => void | Promise<void>;
     onMissingModel: () => void;
     onSubmit: (text: string) => void | Promise<void>;
     onStop: () => void | Promise<void>;
@@ -76,8 +80,10 @@
     selectedModelLabel,
     missingModel,
     reasoningEffort,
+    foregroundMode,
     onSelectModel,
     onSelectReasoningEffort,
+    onForegroundModeChange,
     onMissingModel,
     onSubmit,
     onStop,
@@ -90,6 +96,7 @@
   let q = $derived(messages[locale].quick);
   let p = $derived(messages[locale].prompts);
   let providerText = $derived(messages[locale].provider);
+  let foregroundModeTooltip = $derived(foregroundMode ? t.foregroundModeOn : t.foregroundModeOff);
   let status = $derived<ChatStatus>(running ? 'streaming' : 'ready');
   let draft = $state('');
   let activeIntent = $state<IntentQuickActionMode | null>(null);
@@ -99,6 +106,11 @@
   let tabsVisible = $state(false);
   let modelPickerOpen = $state(false);
   let reasoningPickerOpen = $state(false);
+  let foregroundTooltipOpen = $state(false);
+  let foregroundTooltipLeft = $state(0);
+  let foregroundTooltipTop = $state(0);
+  let foregroundModeMotion = $state<'on' | 'off' | undefined>(undefined);
+  let previousForegroundMode: boolean | undefined;
   let skillsOpen = $state(false);
   let skillList = $state<Skill[]>([]);
   let attachedNames = $state<string[]>([]);
@@ -106,6 +118,7 @@
   let tabsLoadToken = 0;
 
   const icons = { summarize: Summary, research: Search, skills: BookOpen, compare: Scale } as const;
+  const foregroundTooltipId = 'foreground-mode-tooltip';
 
   const microSlide = { duration: 160, easing: cubicOut };
   const baseSlide = { duration: 180, easing: cubicOut };
@@ -122,6 +135,12 @@
 
   $effect(() => {
     if (activeIntent && tabsVisible) void refreshTabs();
+  });
+
+  $effect(() => {
+    const next = foregroundMode;
+    if (previousForegroundMode !== undefined && previousForegroundMode !== next) foregroundModeMotion = next ? 'on' : 'off';
+    previousForegroundMode = next;
   });
 
   function suggestionLabel(mode: QuickActionMode) {
@@ -300,6 +319,24 @@
     return reasoningOptions.find((item) => item.value === value)?.label ?? t.reasoningDefault;
   }
 
+  function showForegroundTooltip(event: Event) {
+    const rect = (event.currentTarget as HTMLButtonElement).getBoundingClientRect();
+    const halfWidth = Math.min(136, (window.innerWidth - 32) / 2);
+    foregroundTooltipLeft = Math.min(window.innerWidth - halfWidth, Math.max(halfWidth, rect.left + rect.width / 2));
+    foregroundTooltipTop = rect.top - 8;
+    foregroundTooltipOpen = true;
+  }
+
+  function hideForegroundTooltip() {
+    foregroundTooltipOpen = false;
+  }
+
+  function handleForegroundTooltipKey(event: KeyboardEvent) {
+    if (event.key !== 'Escape') return;
+    foregroundTooltipOpen = false;
+    event.stopPropagation();
+  }
+
   function providerLabel(provider: ProviderWithModels) {
     if (provider.kind === 'openaiCodex') return providerText.codexProviderName;
     if (provider.kind === 'xaiSub') return providerText.xaiProviderName;
@@ -434,7 +471,7 @@
   </Dialog.Content>
 </Dialog.Root>
 
-<div class="composer-shell ring-line/80 ring-1 {running ? 'is-running' : ''} {activeIntent ? 'is-intent' : ''}">
+<div class="composer-shell ring-line/80 ring-1 {running ? 'is-running' : ''} {activeIntent ? 'is-intent' : ''} {foregroundModeMotion ? `is-mode-${foregroundModeMotion}` : ''}">
   <div class="composer-shell-input" inert={running} aria-hidden={running}>
   <PromptInput
     class="h-full min-h-[7rem] rounded-none border-0 bg-transparent shadow-none ring-0"
@@ -506,7 +543,7 @@
       </div>
     {/if}
     <PromptInputToolbar class="flex-wrap gap-1.5 px-3 pb-3 pt-0">
-      <PromptInputTools class="min-w-0 flex-1 flex-wrap gap-1">
+      <PromptInputTools class="min-w-0 flex-1 flex-nowrap gap-1">
         {#if onAttachFile}
           <input bind:this={fileInput} type="file" class="hidden" multiple accept=".pdf,.docx,.md,.txt,.html,.csv,.json" onchange={handleFilesPicked} />
           <button
@@ -521,9 +558,9 @@
           </button>
         {/if}
         {#if !activeIntent}
-          <div class="flex min-w-0 flex-wrap gap-1 overflow-hidden" transition:slide={microSlide}>
+          <div class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden" transition:slide={microSlide}>
             <DropdownMenu.Root bind:open={modelPickerOpen}>
-              <DropdownMenu.Trigger class="hover:bg-surface-2 flex max-w-[165px] items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] {modelPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
+              <DropdownMenu.Trigger class="hover:bg-surface-2 flex min-w-0 max-w-[165px] items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] {modelPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
                 <Bot class="fx-icon-draw size-4 shrink-0" strokeWidth={1.9} />
                 {#key selectedModelLabel}<span class="fx-label-swap truncate">{selectedModelLabel}</span>{/key}
                 <CaretDown class="size-3 shrink-0 opacity-60 transition-transform duration-150 ease-[var(--ease-out)] {modelPickerOpen ? 'rotate-180' : ''}" />
@@ -553,7 +590,7 @@
             </DropdownMenu.Root>
 
             <DropdownMenu.Root bind:open={reasoningPickerOpen}>
-              <DropdownMenu.Trigger disabled={missingModel} class="hover:bg-surface-2 flex items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] disabled:cursor-default {reasoningPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
+              <DropdownMenu.Trigger disabled={missingModel} class="hover:bg-surface-2 flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-xl px-2.5 py-2 text-[12.5px] transition-[background-color,color,box-shadow,transform] duration-150 ease-[var(--ease-out)] active:scale-[0.97] disabled:cursor-default {reasoningPickerOpen ? 'bg-surface-2 text-foreground shadow-[0_2px_8px_oklch(0_0_0_/_0.04)]' : 'text-muted-foreground hover:text-foreground'}">
                 <BrainCircuit class="fx-icon-draw size-4 shrink-0" strokeWidth={1.9} />
                 {#key `${missingModel}:${reasoningEffort}`}<span class="fx-label-swap">{reasoningLabel(reasoningEffort)}</span>{/key}
                 {#if !missingModel}<CaretDown class="size-3 shrink-0 opacity-60 transition-transform duration-150 ease-[var(--ease-out)] {reasoningPickerOpen ? 'rotate-180' : ''}" />{/if}
@@ -569,6 +606,27 @@
                 {/each}
               </DropdownMenu.Content>
             </DropdownMenu.Root>
+
+            <button
+              type="button"
+              data-foreground-mode={foregroundMode ? 'on' : 'off'}
+              class="fx-mode-trigger relative flex size-8 shrink-0 items-center justify-center rounded-[10px] bg-transparent text-muted-foreground ring-1 ring-transparent disabled:pointer-events-none disabled:opacity-45 hover:bg-surface-2 hover:text-foreground hover:ring-line/70 hover:shadow-[0_4px_12px_oklch(0_0_0_/_0.055)]"
+              aria-label={t.foregroundMode}
+              aria-pressed={foregroundMode}
+              aria-describedby={foregroundTooltipOpen ? foregroundTooltipId : undefined}
+              disabled={disabled || running}
+              onpointerenter={showForegroundTooltip}
+              onpointerleave={hideForegroundTooltip}
+              onfocus={showForegroundTooltip}
+              onblur={hideForegroundTooltip}
+              onkeydown={handleForegroundTooltipKey}
+              onclick={() => void onForegroundModeChange(!foregroundMode)}
+            >
+              <span class="relative size-4" aria-hidden="true">
+                <Eye class="fx-icon-draw fx-mode-icon {foregroundMode ? 'is-active' : ''}" strokeWidth={1.9} />
+                <EyeOff class="fx-icon-draw fx-mode-icon {!foregroundMode ? 'is-active' : ''}" strokeWidth={1.9} />
+              </span>
+            </button>
           </div>
         {/if}
       </PromptInputTools>
@@ -604,3 +662,23 @@
     </button>
   </section>
 </div>
+
+{#if foregroundTooltipOpen}
+  <div
+    class="pointer-events-none fixed z-[80]"
+    style:left="{foregroundTooltipLeft}px"
+    style:top="{foregroundTooltipTop}px"
+    style:transform="translate(-50%, -100%)"
+  >
+    <div
+      id={foregroundTooltipId}
+      role="tooltip"
+      data-slot="tooltip-content"
+      data-state="instant-open"
+      data-open
+      class="fx-popover-content max-w-[min(17rem,calc(100vw-2rem))] rounded-lg bg-surface px-2.5 py-1.5 text-center text-[11.5px] leading-snug text-foreground shadow-[0_5px_16px_oklch(0_0_0_/_0.07)] ring-1 ring-line/70"
+    >
+      {foregroundModeTooltip}
+    </div>
+  </div>
+{/if}
