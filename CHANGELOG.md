@@ -4,6 +4,42 @@
   <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
 </p>
 
+## 0.5.0 - 2026-07-12
+
+### English
+
+#### Highlights
+
+- Added an optional Follow AI actions mode. It activates the controlled target tab before page operations so users can watch the Agent work, without bringing the Chrome window to the front. Background mode remains the default.
+- The selected mode is persisted locally and captured when a task starts, so a running task keeps one consistent execution policy.
+
+#### Changed
+
+- Foreground mode applies consistently to page reading, image extraction, browser control, Browser REPL, debug tools, and navigation. `navigate.open target:"new"` and `navigate.switchTab` follow the task mode.
+- Background viewport capture still activates the target only when Chrome requires it, then restores the previous tab when the user has not switched tabs during capture.
+- The obsolete `active` navigation input is rejected; tab activation is controlled by the task mode instead of model-generated input.
+
+#### Security
+
+- Runtime side-panel smoke tests verify the isolated build marker before clearing extension data or changing site permissions, preventing a test run from modifying an unrelated installed Taber.
+
+### 中文
+
+#### 重点
+
+- 新增可选的“跟随 AI 操作”模式。页面工具执行前会激活受控目标标签页，方便用户观看 Agent 操作，但不会把 Chrome 窗口抢到操作系统前台；默认仍为后台模式。
+- 模式偏好保存在本地，并在任务启动时固定，运行中的任务始终使用同一执行策略。
+
+#### 变更
+
+- 前台模式统一应用于页面读取、图片提取、浏览器控制、Browser REPL、调试工具和导航；`navigate.open target:"new"` 与 `navigate.switchTab` 也遵循任务模式。
+- 后台 viewport 截图仍会在 Chrome 必须激活标签页时临时激活目标；如果用户期间没有切换标签页，截图后会恢复原标签页。
+- 废弃的 `active` 导航输入会被拒绝；标签激活由任务模式控制，不再由模型输入决定。
+
+#### 安全
+
+- 侧边栏运行时烟测会先校验本次隔离构建标记，再清空扩展数据或修改站点权限，避免测试误操作用户已安装的其他 Taber。
+
 ## 0.4.1 - 2026-07-10
 
 ### English
