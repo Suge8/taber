@@ -1791,6 +1791,7 @@ async function runBrowserReplTool(input: unknown, options: { runSandbox(run: Par
   if (!(await database.sessions.get(1))) await createSession({ now: 1 });
   const tools = createAgentTools({
     sessionId: 1,
+    foregroundMode: false,
     async emitEvent() {},
     sendMessage: options.sendMessage,
     runSandbox: options.runSandbox,

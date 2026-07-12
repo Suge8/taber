@@ -26,7 +26,7 @@ async function runFiveMvpScenarios(harness: E2EHarness) {
   await appendAgentEvent({
     sessionId: harness.sessionId,
     type: 'task.started',
-    payload: { taskId: 'task-e2e', prompt: 'Run the five MVP browser tasks', context: harness.currentTabContext() },
+    payload: { taskId: 'task-e2e', prompt: 'Run the five MVP browser tasks', foregroundMode: false, context: harness.currentTabContext() },
     now: 1,
   });
 
@@ -159,6 +159,7 @@ async function createE2EHarness(): Promise<E2EHarness> {
   const broker = new FakeBrowserBroker();
   const tools = createAgentTools({
     sessionId: session.id,
+    foregroundMode: false,
     windowId: 1,
     sendMessage: (message) => broker.handleMessage(message),
     emitEvent: (type, payload) => appendAgentEvent({ sessionId: session.id, type, payload }).then(() => undefined),
@@ -213,7 +214,7 @@ class FakeBrowserBroker {
     webNavigation: this.webNavigationApi as never,
     debugger: this.debuggerApi as never,
   });
-  private readonly navigateController = createNavigateController({ tabs: this.tabsApi as never, webNavigation: this.webNavigationApi as never });
+  private readonly navigateController = createNavigateController({ tabs: this.tabsApi as never, webNavigation: this.webNavigationApi as never, foregroundMode: false });
   private readonly debuggerController = createDebuggerController({ debuggerApi: this.debuggerApi as never, getCurrentTabId: () => this.tabsApi.currentTabId() });
 
   constructor() {
@@ -224,6 +225,7 @@ class FakeBrowserBroker {
   async handleMessage(message: unknown): Promise<unknown> {
     const record = readRecord(message);
     if (!record || typeof record.type !== 'string') return undefined;
+    assert.equal(record.foregroundMode, false, `${record.type} must carry the task foreground mode`);
     if (record.type === chromeApiRequestType) return this.chromeApiBroker(record);
     if (record.type === navigateRequestType) return this.navigateController.navigate(record.input);
     if (record.type === debuggerRequestType) {

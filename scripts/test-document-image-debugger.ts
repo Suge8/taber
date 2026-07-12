@@ -349,6 +349,7 @@ async function testVisibleTargetCaptureRestoresOnlyWithoutUserSwitch() {
   const activations: number[] = [];
   const dataUrl = await captureVisibleTarget({
     targetTabId: 2,
+    restorePreviousTab: true,
     readActiveTabId: async () => activeTabId,
     activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
     waitForPaint: async () => undefined,
@@ -359,9 +360,34 @@ async function testVisibleTargetCaptureRestoresOnlyWithoutUserSwitch() {
 
   activeTabId = 1;
   activations.length = 0;
+  await captureVisibleTarget({
+    targetTabId: 2,
+    restorePreviousTab: false,
+    readActiveTabId: async () => activeTabId,
+    activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
+    waitForPaint: async () => undefined,
+    capture: async () => 'data:image/png;base64,target',
+  });
+  assert.equal(activeTabId, 2, 'foreground mode must keep the target tab active');
+  assert.deepEqual(activations, [2]);
+
+  activations.length = 0;
+  await captureVisibleTarget({
+    targetTabId: 2,
+    restorePreviousTab: false,
+    readActiveTabId: async () => activeTabId,
+    activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
+    waitForPaint: async () => undefined,
+    capture: async () => 'data:image/png;base64,target',
+  });
+  assert.equal(activations.length, 0, 'an already active screenshot target must not be updated again');
+
+  activeTabId = 1;
+  activations.length = 0;
   let captured = false;
   await assert.rejects(() => captureVisibleTarget({
     targetTabId: 2,
+    restorePreviousTab: true,
     readActiveTabId: async () => activeTabId,
     activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
     waitForPaint: async () => { activeTabId = 3; },
@@ -375,6 +401,7 @@ async function testVisibleTargetCaptureRestoresOnlyWithoutUserSwitch() {
   activations.length = 0;
   await assert.rejects(() => captureVisibleTarget({
     targetTabId: 2,
+    restorePreviousTab: true,
     readActiveTabId: async () => activeTabId,
     activate: async (tabId) => { activeTabId = tabId; activations.push(tabId); },
     waitForPaint: async () => undefined,

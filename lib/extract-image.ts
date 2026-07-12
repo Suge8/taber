@@ -55,6 +55,7 @@ export type ExtractImageResult = ExtractImageSuccess | ExtractImageRecoverableEr
 
 export async function captureVisibleTarget(options: {
   targetTabId: number;
+  restorePreviousTab: boolean;
   readActiveTabId(): Promise<number | undefined>;
   activate(tabId: number): Promise<void>;
   waitForPaint(): Promise<void>;
@@ -72,7 +73,7 @@ export async function captureVisibleTarget(options: {
     if (await options.readActiveTabId() !== options.targetTabId) throw new Error('Target tab changed during viewport capture.');
     return dataUrl;
   } finally {
-    if (activated && previousTabId !== undefined && await options.readActiveTabId() === options.targetTabId) {
+    if (options.restorePreviousTab && activated && previousTabId !== undefined && await options.readActiveTabId() === options.targetTabId) {
       await options.activate(previousTabId);
     }
   }

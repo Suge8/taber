@@ -5,6 +5,7 @@ import { createChromeApiBroker, isTrustedChromeApiSender } from '../lib/chrome-a
 import { createDebuggerController, debuggerRequestType } from '../lib/debugger-tool';
 import { captureVisibleTarget, extractImageFromPage, parseExtractImageInput, type ExtractImageInput } from '../lib/extract-image';
 import { extractDocumentFromPage, parseGetDocumentInput } from '../lib/get-document';
+import { parseForegroundMode } from '../lib/foreground-mode';
 import { createNavigateController, navigateRequestType } from '../lib/navigate';
 import { createOffscreenLifecycle } from '../lib/offscreen-lifecycle';
 import { installBrowserReplPageLocator, runBrowserReplPageRuntimeInjected } from '../lib/browser-repl-page';
@@ -191,8 +192,7 @@ async function debug(message: Record<string, unknown>) {
   const input = isRecord(message.input) ? message.input : {};
   const targetTabId = readTargetTabId(message.targetTabId);
   if (targetTabId !== undefined) {
-    if (Number.isInteger(input.tabId) && Number(input.tabId) !== targetTabId) throw targetMismatchError(targetTabId, Number(input.tabId));
-    await requireTargetTab(targetTabId);
+    await prepareAgentTarget(message, Number.isInteger(input.tabId) ? Number(input.tabId) : undefined);
     return debuggerController.run({ ...input, tabId: targetTabId });
   }
   if (Number.isInteger(input.tabId) && Number(input.tabId) > 0) return debuggerController.run(input);
@@ -216,13 +216,12 @@ function navigate(message: Record<string, unknown>) {
     } as never,
     webNavigation: browser.webNavigation as never,
     currentTabId: readTargetTabId(message.targetTabId),
+    foregroundMode: parseForegroundMode(message.foregroundMode),
   }).navigate(message.input);
 }
 
 async function chromeApi(message: Record<string, unknown>) {
-  const targetTabId = readTargetTabId(message.targetTabId);
-  const requestedTabId = readChromeApiTabId(message);
-  if (targetTabId !== undefined && requestedTabId !== undefined) await assertTargetTab(targetTabId, requestedTabId);
+  if (readTargetTabId(message.targetTabId) !== undefined) await prepareAgentTarget(message, readChromeApiTabId(message));
   return chromeApiBroker(message);
 }
 
@@ -247,17 +246,12 @@ function readFrameId(value: unknown) {
   throw new Error(`Invalid frame id: ${String(value)}`);
 }
 
-async function assertMessageTarget(message: Record<string, unknown>, requestedTabId: number) {
+async function prepareAgentTarget(message: Record<string, unknown>, requestedTabId?: number) {
   const targetTabId = readTargetTabId(message.targetTabId);
   if (targetTabId === undefined) return;
-  await assertTargetTab(targetTabId, requestedTabId);
-}
-
-async function assertTargetTab(targetTabId: number, requestedTabId: number) {
-  if (requestedTabId !== targetTabId) throw targetMismatchError(targetTabId, requestedTabId);
-  // Validate only: page tools work on background tabs, and stealing the user's
-  // active tab on every call breaks unattended automation.
-  await requireTargetTab(targetTabId);
+  if (requestedTabId !== undefined && requestedTabId !== targetTabId) throw targetMismatchError(targetTabId, requestedTabId);
+  const tab = await requireTargetTab(targetTabId);
+  if (parseForegroundMode(message.foregroundMode) && !tab.active) await updateTab(targetTabId, { active: true });
 }
 
 async function requireTargetTab(tabId: number): Promise<BrowserTabLike> {
@@ -279,19 +273,13 @@ function targetMismatchError(targetTabId: number, requestedTabId: number) {
 async function createTab(properties: Record<string, unknown>) {
   const tab = await browser.tabs.create(properties) as BrowserTabLike | undefined;
   if (!tab) throw new Error('Chrome tab was not created');
-  if (properties.active !== false) await focusTabWindow(tab);
   return tab;
 }
 
 async function updateTab(tabId: number, properties: Record<string, unknown>) {
   const tab = await browser.tabs.update(tabId, properties) as BrowserTabLike | undefined;
   if (!tab) throw new Error(`Target tab is no longer available: ${tabId}`);
-  if (properties.active === true) await focusTabWindow(tab);
   return tab;
-}
-
-async function focusTabWindow(tab: { windowId?: number }) {
-  if (Number.isInteger(tab.windowId) && Number(tab.windowId) > 0) await browser.windows.update(Number(tab.windowId), { focused: true }).catch(() => undefined);
 }
 
 function tabContext(tab: BrowserTabLike) {
@@ -323,7 +311,7 @@ async function extractPageDocument(message: Record<string, unknown>) {
   const tabId = readMessageTabId(message.tabId, 'taber.getDocument.extractPage requires tabId');
   const input = parseGetDocumentInput(isRecord(message.input) ? message.input : {});
   if (input.source !== 'currentPage') throw new Error('taber.getDocument.extractPage requires source=currentPage');
-  await assertMessageTarget(message, tabId);
+  await prepareAgentTarget(message, tabId);
   return browser.scripting.executeScript({
     target: { tabId },
     func: extractDocumentFromPage,
@@ -336,6 +324,7 @@ const CAPTURE_ACTIVATION_RENDER_DELAY_MS = 150;
 async function captureVisibleTab(message: Record<string, unknown>) {
   const input = parseExtractImageInput(isRecord(message.input) ? message.input : {});
   if (input.source !== 'viewport') throw new Error('taber.extractImage.captureVisibleTab only supports source=viewport');
+  const foregroundMode = parseForegroundMode(message.foregroundMode);
   const targetTabId = readTargetTabId(message.targetTabId);
   if (targetTabId !== undefined && input.tabId !== undefined && input.tabId !== targetTabId) throw targetMismatchError(targetTabId, input.tabId);
   const captureTabId = targetTabId ?? input.tabId;
@@ -343,9 +332,10 @@ async function captureVisibleTab(message: Record<string, unknown>) {
   const windowId = requireWindowId(tab);
 
   // Chrome only captures the active tab. Reject any screenshot taken across a
-  // user tab switch, and restore focus only while the target remains active.
+  // user tab switch, and restore the previous active tab only when requested.
   const dataUrl = await captureVisibleTarget({
     targetTabId: requireTabId(tab),
+    restorePreviousTab: !foregroundMode,
     readActiveTabId: async () => (await browser.tabs.query({ active: true, windowId }) as BrowserTabLike[])[0]?.id,
     activate: async (tabId) => { await updateTab(tabId, { active: true }); },
     waitForPaint: () => new Promise((resolve) => setTimeout(resolve, CAPTURE_ACTIVATION_RENDER_DELAY_MS)),
@@ -364,7 +354,7 @@ async function extractPageImage(message: Record<string, unknown>) {
   const tabId = readMessageTabId(message.tabId, 'taber.extractImage.extractPage requires tabId');
   const input = parseExtractImageInput(isRecord(message.input) ? message.input : {});
   if (input.source === 'viewport') throw new Error('taber.extractImage.extractPage does not support viewport; use captureVisibleTab');
-  await assertMessageTarget(message, tabId);
+  await prepareAgentTarget(message, tabId);
   return browser.scripting.executeScript({
     target: { tabId },
     func: extractImageFromPage,
@@ -374,6 +364,7 @@ async function extractPageImage(message: Record<string, unknown>) {
 
 async function startTask(message: Record<string, unknown>) {
   if (typeof message.prompt !== 'string') throw new Error('Task prompt is required');
+  const foregroundMode = parseForegroundMode(message.foregroundMode);
   const windowId = readRequiredWindowId(message.windowId);
   // Tasks may start on non-operable pages (chrome://, new tab): pure Q&A needs
   // no page, and navigate.open can steer the tab to a real site. Page tools
@@ -382,7 +373,7 @@ async function startTask(message: Record<string, unknown>) {
   const tab = selectOperableActiveTab(tabs) ?? tabs.find((candidate) => Number.isInteger(candidate.id) && Number(candidate.id) > 0);
   if (!tab) throw new Error('No active tab in the side panel window');
   const targetTab = tabContext(tab);
-  return agentHost.startTask({ prompt: message.prompt, sessionId: readSessionId(message.sessionId), windowId: targetTab.windowId ?? windowId, targetTabId: targetTab.id, targetTab, locale: readAgentLocale(message.locale) });
+  return agentHost.startTask({ prompt: message.prompt, foregroundMode, sessionId: readSessionId(message.sessionId), windowId: targetTab.windowId ?? windowId, targetTabId: targetTab.id, targetTab, locale: readAgentLocale(message.locale) });
 }
 
 function isPrivilegedMessageType(type: string) {
@@ -449,7 +440,7 @@ function withUserScriptTimeout(promise: Promise<unknown>, timeoutMs?: number) {
 
 async function executeBrowserReplScriptingCommand(message: Record<string, unknown>) {
   const tabId = readMessageTabId(message.tabId, 'taber.browserRepl.scriptingCommand requires tabId');
-  await assertMessageTarget(message, tabId);
+  await prepareAgentTarget(message, tabId);
   const scripting = (globalThis as typeof globalThis & { chrome?: { scripting?: { executeScript(details: unknown): Promise<unknown> } } }).chrome?.scripting;
   if (!scripting?.executeScript) throw new Error('chrome.scripting API is unavailable');
 

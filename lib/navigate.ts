@@ -19,7 +19,6 @@ export type NavigateInput = {
   url?: string;
   target?: 'current' | 'new';
   tabId?: number;
-  active?: boolean;
   timeoutMs?: number;
 };
 
@@ -59,7 +58,6 @@ export const navigateInputJsonSchema = {
     url: { type: 'string', description: 'URL to open. Required for action=open.' },
     target: { type: 'string', enum: ['current', 'new'], description: 'Open in current tab or new tab.' },
     tabId: { type: 'integer', minimum: 1, description: 'Tab id. Required for switchTab and closeTab.' },
-    active: { type: 'boolean', description: 'Whether a newly opened tab should become active. Defaults to false so automation does not steal the user\u2019s focus.' },
     timeoutMs: { type: 'integer', minimum: 1, maximum: MAX_NAVIGATION_TIMEOUT_MS },
   },
 } as const;
@@ -111,6 +109,7 @@ export function createNavigateController(options: {
   webNavigation: WebNavigationApi;
   scheduler?: Scheduler;
   currentTabId?: number;
+  foregroundMode: boolean;
 }) {
   const scheduler = options.scheduler ?? {
     setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
@@ -135,10 +134,8 @@ export function createNavigateController(options: {
       case 'switchTab': {
         if (options.currentTabId !== undefined) await currentTab();
         const tabId = requireInputTabId(input);
-        // Retargeting the task does not need to steal the user's active tab;
-        // page tools operate on background tabs.
         const tab = assertOperableTab(await options.tabs.get(tabId));
-        return { action: input.action, tab: toNavigateTab(tab) };
+        return { action: input.action, tab: toNavigateTab(await activateForTaskMode(tab)) };
       }
       case 'closeTab': {
         const tabId = requireInputTabId(input);
@@ -155,14 +152,13 @@ export function createNavigateController(options: {
   async function openTab(input: NavigateInput): Promise<NavigateResult> {
     const url = requireUrl(input);
     if ((input.target ?? 'current') === 'new') {
-      // New tabs open in the background by default so unattended automation
-      // does not steal focus; the model can pass active:true when the user asks.
-      const tab = await options.tabs.create({ url, active: input.active ?? false, ...await lockedTargetWindow() });
+      const tab = await options.tabs.create({ url, active: options.foregroundMode, ...await lockedTargetWindow() });
       const navigation = await waitForTabNavigation(requireTabId(tab), timeoutMs(input), true);
       return { action: input.action, navigation, tab: toNavigateTab(assertOperableTab(await options.tabs.get(requireTabId(tab)))) };
     }
 
     const tabId = await currentTabId(input);
+    await activateTabForTaskMode(tabId);
     const waiter = waitForTabNavigation(tabId, timeoutMs(input));
     try {
       await options.tabs.update(tabId, { url });
@@ -175,6 +171,7 @@ export function createNavigateController(options: {
 
   async function moveInHistory(input: NavigateInput, direction: 'back' | 'forward'): Promise<NavigateResult> {
     const tabId = await currentTabId(input);
+    await activateTabForTaskMode(tabId);
     const waiter = waitForTabNavigation(tabId, timeoutMs(input));
     try {
       if (direction === 'back') await options.tabs.goBack(tabId);
@@ -188,6 +185,7 @@ export function createNavigateController(options: {
 
   async function reloadTab(input: NavigateInput): Promise<NavigateResult> {
     const tabId = await currentTabId(input);
+    await activateTabForTaskMode(tabId);
     const waiter = waitForTabNavigation(tabId, timeoutMs(input));
     try {
       await options.tabs.reload(tabId);
@@ -226,6 +224,16 @@ export function createNavigateController(options: {
     const windowId = (await currentTab()).windowId;
     if (!Number.isInteger(windowId) || Number(windowId) <= 0) throw new Error(`Target tab window id is missing: ${options.currentTabId}`);
     return { windowId: Number(windowId) };
+  }
+
+  async function activateTabForTaskMode(tabId: number) {
+    if (!options.foregroundMode) return;
+    await activateForTaskMode(await options.tabs.get(tabId));
+  }
+
+  async function activateForTaskMode(tab: BrowserTab) {
+    if (!options.foregroundMode || tab.active) return tab;
+    return options.tabs.update(requireTabId(tab), { active: true });
   }
 
   function assertLockedTabId(input: NavigateInput) {
@@ -308,12 +316,12 @@ export function createNavigateController(options: {
 export function parseNavigateInput(value: unknown): NavigateInput {
   if (!isRecord(value)) throw new Error('Navigate input must be an object');
   if (!isNavigateAction(value.action)) throw new Error(`Invalid navigate action: ${String(value.action)}`);
+  if ('active' in value) throw new Error('active is not a supported navigate field');
 
   const input: NavigateInput = { action: value.action };
   if ('url' in value) input.url = readString(value.url, 'url');
   if ('target' in value) input.target = readTarget(value.target);
   if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  if ('active' in value) input.active = readBoolean(value.active, 'active');
   if ('timeoutMs' in value) input.timeoutMs = readPositiveInteger(value.timeoutMs, 'timeoutMs');
 
   if (input.timeoutMs && input.timeoutMs > MAX_NAVIGATION_TIMEOUT_MS) {
@@ -388,11 +396,6 @@ function readTarget(value: unknown) {
 function readPositiveInteger(value: unknown, name: string) {
   if (Number.isInteger(value) && Number(value) > 0) return Number(value);
   throw new Error(`${name} must be a positive integer`);
-}
-
-function readBoolean(value: unknown, name: string) {
-  if (typeof value !== 'boolean') throw new Error(`${name} must be a boolean`);
-  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

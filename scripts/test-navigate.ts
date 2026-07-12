@@ -18,6 +18,7 @@ function testParsesRequiredInputs() {
   });
   assert.throws(() => parseNavigateInput({ action: 'open' }), /navigate.open requires url/);
   assert.throws(() => parseNavigateInput({ action: 'switchTab' }), /navigate.switchTab requires tabId/);
+  assert.throws(() => parseNavigateInput({ action: 'open', url: 'https://example.com', active: true }), /active is not a supported navigate field/);
 }
 
 async function testOpensCurrentTabAfterNavigationEvent() {
@@ -43,7 +44,7 @@ async function testOpensNewTabAfterNavigationEvent() {
   const browser = createFakeBrowser();
   const controller = createNavigateController(browser);
 
-  const pending = controller.navigate({ action: 'open', target: 'new', url: 'https://new.example', active: false });
+  const pending = controller.navigate({ action: 'open', target: 'new', url: 'https://new.example' });
   await flushMicrotasks();
 
   assert.deepEqual(browser.tabs.creates[0], { url: 'https://new.example', active: false });
@@ -70,7 +71,7 @@ async function testListsAndSwitchesTabs() {
   browser.tabs.tabs.push({ id: 2, active: false, index: 2, status: 'complete', title: 'Second', url: 'https://second.example', windowId: 1 });
   const switched = await controller.navigate({ action: 'switchTab', tabId: 2 });
   assert.equal(switched.tab?.id, 2);
-  // Retargeting must not steal the user's active tab.
+  // Background mode retargets without changing the active tab.
   assert.deepEqual(browser.tabs.updates, []);
   assert.equal(browser.tabs.tabs[0].active, true);
 }
@@ -109,6 +110,54 @@ async function testTargetTabOverridesActiveTab() {
   const result = await newTab;
   assert.equal(result.tab?.id, 3);
   assert.equal(result.tab?.windowId, 11);
+}
+
+async function testForegroundModeControlsActivation() {
+  const currentBrowser = createFakeBrowser();
+  currentBrowser.tabs.tabs.push({ id: 2, active: false, index: 1, status: 'complete', title: 'Target', url: 'https://target.example', windowId: 1 });
+  const currentController = createNavigateController({ ...currentBrowser, currentTabId: 2, foregroundMode: true });
+  const currentPending = currentController.navigate({ action: 'open', url: 'https://opened.example' });
+  await flushMicrotasks();
+  assert.deepEqual(currentBrowser.tabs.updates.slice(0, 2), [
+    { tabId: 2, properties: { active: true } },
+    { tabId: 2, properties: { url: 'https://opened.example' } },
+  ]);
+  currentBrowser.webNavigation.onCompleted.emit({ tabId: 2, frameId: 0, url: 'https://opened.example' });
+  await currentPending;
+
+  const newBrowser = createFakeBrowser();
+  const newController = createNavigateController({ ...newBrowser, currentTabId: 1, foregroundMode: true });
+  const newPending = newController.navigate({ action: 'open', target: 'new', url: 'https://new.example' });
+  await flushMicrotasks();
+  assert.deepEqual(newBrowser.tabs.creates[0], { url: 'https://new.example', active: true, windowId: 1 });
+  newBrowser.webNavigation.onCompleted.emit({ tabId: 2, frameId: 0, url: 'https://new.example' });
+  assert.equal((await newPending).tab?.active, true);
+
+  const switchBrowser = createFakeBrowser();
+  switchBrowser.tabs.tabs.push({ id: 2, active: false, index: 1, status: 'complete', title: 'Next', url: 'https://next.example', windowId: 1 });
+  const switchController = createNavigateController({ ...switchBrowser, currentTabId: 1, foregroundMode: true });
+  const switched = await switchController.navigate({ action: 'switchTab', tabId: 2 });
+  assert.equal(switched.tab?.active, true);
+  assert.deepEqual(switchBrowser.tabs.updates, [{ tabId: 2, properties: { active: true } }]);
+
+  for (const action of ['back', 'forward', 'reload'] as const) {
+    const browser = createFakeBrowser();
+    browser.tabs.tabs.push({ id: 2, active: false, index: 1, status: 'complete', title: 'Target', url: 'https://target.example', windowId: 1 });
+    const controller = createNavigateController({ ...browser, currentTabId: 2, foregroundMode: true });
+    const pending = controller.navigate({ action });
+    await flushMicrotasks();
+    assert.deepEqual(browser.tabs.updates[0], { tabId: 2, properties: { active: true } }, `${action} must activate the target first`);
+    browser.webNavigation.onCompleted.emit({ tabId: 2, frameId: 0, url: 'https://target.example' });
+    await pending;
+  }
+
+  const activeBrowser = createFakeBrowser();
+  const activeController = createNavigateController({ ...activeBrowser, currentTabId: 1, foregroundMode: true });
+  const reload = activeController.navigate({ action: 'reload' });
+  await flushMicrotasks();
+  assert.deepEqual(activeBrowser.tabs.updates, [], 'an already active target must not be updated again');
+  activeBrowser.webNavigation.onCompleted.emit({ tabId: 1, frameId: 0, url: 'https://first.example' });
+  await reload;
 }
 
 async function testSwitchTabFailsWhenLockedTargetUnavailable() {
@@ -187,7 +236,7 @@ function createFakeBrowser() {
     onCompleted: new FakeEvent<(details: { tabId: number; frameId: number; url?: string }) => void>(),
     onErrorOccurred: new FakeEvent<(details: { tabId: number; frameId: number; url?: string; error?: string }) => void>(),
   };
-  return { tabs, webNavigation, scheduler };
+  return { tabs, webNavigation, scheduler, foregroundMode: false };
 }
 
 function createTabsApi() {
@@ -259,6 +308,10 @@ async function flushMicrotasks() {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 function createScheduler() {
@@ -307,6 +360,7 @@ await testOpensNewTabAfterNavigationEvent();
 await testListsAndSwitchesTabs();
 await testCurrentTabRejectsUnsupportedActiveTab();
 await testTargetTabOverridesActiveTab();
+await testForegroundModeControlsActivation();
 await testSwitchTabFailsWhenLockedTargetUnavailable();
 await testHistoryCurrentAndCloseActions();
 await testNavigationTimeoutUsesEventWaiter();
