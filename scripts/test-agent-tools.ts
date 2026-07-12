@@ -14,6 +14,7 @@ await createSession({ now: 1 });
 const messages: unknown[] = [];
 const tools = createAgentTools({
   sessionId: 1,
+  foregroundMode: false,
   windowId: 42,
   async sendMessage(message) {
     messages.push(message);
@@ -38,8 +39,9 @@ execFileSync(process.execPath, ['--experimental-strip-types', '--input-type=modu
   const messages = [];
   const tools = createAgentTools({
     sessionId: 1,
+    foregroundMode: true,
     targetTabId: 7,
-    async sendMessage(message) { messages.push(message); return {}; },
+    async sendMessage(message) { messages.push(message); return { error: 'synthetic debugger request' }; },
     async emitEvent() {},
   });
   assert.equal('debugger' in tools, true);
@@ -48,6 +50,12 @@ execFileSync(process.execPath, ['--experimental-strip-types', '--input-type=modu
     /locked to target tab 7; received tabId 8.*navigate\.switchTab/,
   );
   assert.equal(messages.length, 0, 'mismatched debugger tabId must fail before any background request');
+  await assert.rejects(
+    () => tools.debugger.execute({ action: 'diagnostics' }, { abortSignal: new AbortController().signal }),
+    /synthetic debugger request/,
+  );
+  assert.equal(messages[0]?.foregroundMode, true, 'debugger requests must carry the immutable task mode');
+  assert.equal(messages[0]?.targetTabId, 7);
   const prompt = JSON.parse(createAgentToolPromptEstimateText());
   assert.match(prompt.debugger.description, /accessibility snapshots/);
   assert(prompt.debugger.inputSchema.properties.action.enum.includes('accessibilitySnapshot'));
@@ -79,6 +87,9 @@ assert.match(agentInstructions, /waitFor, not sleep\/setTimeout/);
 assert.doesNotMatch(agentInstructions, /chain[- ]of[- ]thought|raw reasoning|思维链/i);
 assert.doesNotMatch(agentInstructions, /Before interacting with a page based on prior context/);
 const prompt = JSON.parse(createAgentToolPromptEstimateText({ browserJsEnabled: true }));
+for (const [toolName, definition] of Object.entries(prompt)) {
+  assert.equal('foregroundMode' in readProperties((definition as { inputSchema: unknown }).inputSchema), false, `${toolName} must not expose task mode to the model`);
+}
 await assertOpenAICompatibleToolSchemas(prompt);
 const browserPrompt = prompt.browser;
 assert.match(browserPrompt.description, /human-readable locators/);
@@ -131,7 +142,7 @@ assert(!browserReplToolHelperNames(false).includes('browserjs'));
 assert.equal('tabId' in replPrompt.inputSchema.properties, false);
 assert.match(prompt.getDocument.description, /Read webpage, PDF, or workspace file/);
 assert.match(prompt.navigate.description, /Changes target only on action:"switchTab" or open target:"new"/);
-assert.match(prompt.extractImage.description, /Viewport requires visible target tab/);
+assert.match(prompt.extractImage.description, /Chrome may briefly activate it.*background/);
 assert.deepEqual(readSourceEnum(prompt.getDocument.inputSchema), ['currentPage', 'url', 'file']);
 assert.equal('tabId' in readProperties(prompt.getDocument.inputSchema), false);
 assert.deepEqual(readSourceEnum(prompt.extractImage.inputSchema), ['viewport', 'imageElement', 'canvas', 'backgroundImage']);
@@ -162,17 +173,56 @@ await (tools.navigate.execute as (input: unknown, options: unknown) => Promise<u
 assert.deepEqual(image, { ok: true, source: 'viewport', dataUrl: 'data:image/png;base64,AAA=', mediaType: 'image/png', width: 1280, height: 720 });
 assert.deepEqual(file, { ok: false, code: 'FILE_NOT_FOUND', message: 'Workspace file not found: missing.txt.', retryHint: 'Use fs ls to list available /workspace files.' });
 assert.deepEqual(
-  messages.filter((message) => isRecord(message)).map((message) => ({ type: message.type, windowId: message.windowId, input: message.input })),
+  messages.filter((message) => isRecord(message)).map((message) => ({ type: message.type, foregroundMode: message.foregroundMode, windowId: message.windowId, input: message.input })),
   [
-    { type: 'taber.extractImage.captureVisibleTab', windowId: 42, input: { source: 'viewport' } },
-    { type: 'taber.navigate.request', windowId: 42, input: { action: 'currentTab' } },
+    { type: 'taber.extractImage.captureVisibleTab', foregroundMode: false, windowId: 42, input: { source: 'viewport' } },
+    { type: 'taber.navigate.request', foregroundMode: false, windowId: 42, input: { action: 'currentTab' } },
   ],
 );
+
+const modeMessages: Record<string, unknown>[] = [];
+const modeTools = createAgentTools({
+  sessionId: 1,
+  foregroundMode: true,
+  targetTabId: 7,
+  async sendMessage(message) {
+    if (!isRecord(message)) throw new Error('Expected a message object');
+    modeMessages.push(message);
+    if (message.type === 'taber.getDocument.extractPage') return { title: 'Selection', url: 'https://example.test', selection: 'selected', html: '' };
+    if (message.type === 'taber.extractImage.captureVisibleTab') return { dataUrl: 'data:image/png;base64,AAA=' };
+    if (message.type === 'taber.extractImage.extractPage') return { ok: true, source: 'imageElement', selector: 'img', url: 'https://example.test/image.png' };
+    if (message.type === 'taber.browserRepl.scriptingCommand') return { selector: '#picked' };
+    if (message.type === 'taber.navigate.request') return { action: 'currentTab', tab: { id: 7, url: 'https://example.test' } };
+    if (message.type === 'taber.chromeApi.request') return { error: 'synthetic browser request' };
+    throw new Error(`Unexpected mode message: ${JSON.stringify(message)}`);
+  },
+  async emitEvent() {},
+  async runSandbox(run) { return run.helpers.pickUserElement('Pick one'); },
+  browserJsEnabled: false,
+});
+const runModeTool = (tool: unknown, input: unknown) =>
+  ((tool as { execute: unknown }).execute as (input: unknown, options: unknown) => Promise<unknown>)(input, { abortSignal: new AbortController().signal });
+await runModeTool(modeTools.getDocument, { source: 'currentPage', mode: 'selection' });
+await runModeTool(modeTools.extractImage, { source: 'viewport' });
+await runModeTool(modeTools.extractImage, { source: 'imageElement', selector: 'img' });
+await assert.rejects(runModeTool(modeTools.browser, { action: 'snapshot' }), /synthetic browser request/);
+await runModeTool(modeTools.browserRepl, { code: 'return await pickUserElement("Pick one")' });
+await runModeTool(modeTools.navigate, { action: 'currentTab' });
+assert.equal(modeMessages.every((message) => message.foregroundMode === true), true, 'every Agent broker request must carry the task mode');
+assert.deepEqual(new Set(modeMessages.map((message) => message.type)), new Set([
+  'taber.getDocument.extractPage',
+  'taber.extractImage.captureVisibleTab',
+  'taber.extractImage.extractPage',
+  'taber.chromeApi.request',
+  'taber.browserRepl.scriptingCommand',
+  'taber.navigate.request',
+]));
 
 const targetMessages: unknown[] = [];
 const targetChanges: unknown[] = [];
 const targetTools = createAgentTools({
   sessionId: 1,
+  foregroundMode: true,
   taskId: 'task-1',
   windowId: 42,
   targetTabId: 7,
@@ -217,13 +267,13 @@ assert.deepEqual(targetChanges, [
   { fromTabId: 8, toTabId: 9, reason: 'openNew', tab: { id: 9, url: 'https://new.example' } },
 ]);
 assert.deepEqual(
-  targetMessages.filter((message) => isRecord(message)).map((message) => ({ type: message.type, targetTabId: message.targetTabId, input: message.input })),
+  targetMessages.filter((message) => isRecord(message)).map((message) => ({ type: message.type, foregroundMode: message.foregroundMode, targetTabId: message.targetTabId, input: message.input })),
   [
-    { type: 'taber.navigate.request', targetTabId: 7, input: { action: 'currentTab' } },
-    { type: 'taber.navigate.request', targetTabId: 7, input: { action: 'switchTab', tabId: 8 } },
-    { type: 'taber.navigate.request', targetTabId: 8, input: { action: 'currentTab' } },
-    { type: 'taber.navigate.request', targetTabId: 8, input: { action: 'open', target: 'new', url: 'https://new.example' } },
-    { type: 'taber.navigate.request', targetTabId: 9, input: { action: 'currentTab' } },
+    { type: 'taber.navigate.request', foregroundMode: true, targetTabId: 7, input: { action: 'currentTab' } },
+    { type: 'taber.navigate.request', foregroundMode: true, targetTabId: 7, input: { action: 'switchTab', tabId: 8 } },
+    { type: 'taber.navigate.request', foregroundMode: true, targetTabId: 8, input: { action: 'currentTab' } },
+    { type: 'taber.navigate.request', foregroundMode: true, targetTabId: 8, input: { action: 'open', target: 'new', url: 'https://new.example' } },
+    { type: 'taber.navigate.request', foregroundMode: true, targetTabId: 9, input: { action: 'currentTab' } },
   ],
 );
 
@@ -231,6 +281,7 @@ let externalTargetTabId = 7;
 const externalTargetMessages: unknown[] = [];
 const externalTargetTools = createAgentTools({
   sessionId: 1,
+  foregroundMode: false,
   targetTabId: 7,
   getTargetTabId: () => externalTargetTabId,
   async sendMessage(message) {
@@ -249,6 +300,7 @@ const replNavigateMessages: unknown[] = [];
 const replNavigateChanges: unknown[] = [];
 const replNavigateTools = createAgentTools({
   sessionId: 1,
+  foregroundMode: false,
   targetTabId: 7,
   async sendMessage(message) {
     replNavigateMessages.push(message);
@@ -281,6 +333,7 @@ assert.deepEqual(replNavigateMessages.filter(isRecord).map((message) => ({ type:
 const cancellableMessages: unknown[] = [];
 const cancellableTools = createAgentTools({
   sessionId: 1,
+  foregroundMode: false,
   targetTabId: 7,
   async sendMessage(message) {
     cancellableMessages.push(message);
@@ -309,6 +362,7 @@ const unavailable: string[] = [];
 const failedTargetChanges: unknown[] = [];
 const failingTargetTools = createAgentTools({
   sessionId: 1,
+  foregroundMode: false,
   targetTabId: 7,
   async sendMessage(message) {
     if (isRecord(message) && message.type === 'taber.navigate.request' && isRecord(message.input) && message.input.action === 'open') return { error: 'Tab is not operable: chrome://settings' };
@@ -348,6 +402,7 @@ assert.deepEqual(failedTargetChanges, []);
   const exampleTab = { id: 7, url: 'https://example.com/page' };
   const hostTools = createAgentTools({
     sessionId: 1,
+    foregroundMode: false,
     targetTabId: 7,
     targetTabUrl: 'https://start.test/',
     async sendMessage(message) {
@@ -370,6 +425,7 @@ assert.deepEqual(failedTargetChanges, []);
 
   const replTools = createAgentTools({
     sessionId: 1,
+    foregroundMode: false,
     targetTabId: 7,
     targetTabUrl: 'https://start.test/',
     async sendMessage(message) {
@@ -458,6 +514,7 @@ assert.deepEqual(failedTargetChanges, []);
   await saveSkill({ name: 'Fail flow', hosts: ['fail.test'], description: 'd', content: 'c', source: 'user' });
   const failingTools = createAgentTools({
     sessionId: 1,
+    foregroundMode: false,
     targetTabId: 7,
     async sendMessage(message) {
       if (isRecord(message) && message.type === 'taber.navigate.request' && isRecord(message.input) && message.input.action === 'reload') return { error: 'Navigation failed: net::ERR_FAILED' };

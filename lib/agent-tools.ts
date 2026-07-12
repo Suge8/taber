@@ -24,6 +24,7 @@ type TargetChanged = { fromTabId?: number; toTabId: number; reason: TargetChange
 
 type AgentToolOptions = {
   sessionId: number;
+  foregroundMode: boolean;
   taskId?: string;
   windowId?: number;
   targetTabId?: number;
@@ -38,7 +39,7 @@ type AgentToolOptions = {
 };
 
 const getDocumentDescription = 'Read webpage, PDF, or workspace file as structured content. Long content is saved to /workspace and the result carries a preview plus savedTo; read the file for the rest. Use when you need article text, page content, selection, or tables. Fetch-first: for public/static URLs prefer source:"url" (fetches the page or PDF directly, no tab, fast, parallelizable); use source:"currentPage" when content needs login, JS rendering, or the controlled tab. For currentPage: mode:"article" extracts main content, mode:"page" gets full text, mode:"selection" reads user selection. source:"file" reads an uploaded or generated /workspace file (pdf, docx, or text) as text. Results include open shadow root text and same-origin iframe content; cross-origin iframes show metadata with access hints.';
-const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport results include width/height: the viewport size in CSS px, the coordinate space for browser { x, y } targets (scale screenshot pixel coords by width/imageWidth). Viewport requires visible target tab; to capture another tab, call navigate.switchTab first.';
+const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport results include width/height: the viewport size in CSS px, the coordinate space for browser { x, y } targets (scale screenshot pixel coords by width/imageWidth). Viewport uses the controlled target; Chrome may briefly activate it to capture even when the task runs in background.';
 const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Use for all navigation. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly. navigation.status:"timeout" means the load event did not fire in time but the page is often already usable: check tab.url and continue with browser snapshot instead of retrying the same navigation.';
 const debuggerDescription = 'Debug-build only: read console, network, failed requests, accessibility snapshots, main-world JS state, or raw CDP. Use for diagnosing console errors, network failures, and accessibility issues. Cookies are blocked.';
 const fsDescription = 'Session file workspace and site skills. ls lists /workspace (uploads and outputs) and /skills (stored site knowledge). read returns file text. write saves text files (.md/.txt/.html/.csv/.json) or converts Markdown to Word (.docx); for PDF output write .md or .html and tell the user to export it from the sidebar. /skills/*.md files are reusable prior knowledge about sites: read matching skills before blind exploration; they are priors, live page state wins. After a task where you discovered a non-obvious reusable site flow or pitfall, write a concise skill file. Never store secrets or personal data.';
@@ -81,6 +82,7 @@ export function createAgentTools(options: AgentToolOptions) {
   const browserJsEnabled = options.browserJsEnabled !== false;
   const runtime = new AgentToolRuntime({
     sessionId: options.sessionId,
+    foregroundMode: options.foregroundMode,
     sendMessage: options.sendMessage,
     windowId: options.windowId,
     targetTabId: options.targetTabId,
@@ -161,6 +163,7 @@ class AgentToolRuntime {
 
   constructor(options: {
     sessionId: number;
+    foregroundMode: boolean;
     sendMessage: SendMessage;
     windowId?: number;
     targetTabId?: number;
@@ -172,7 +175,7 @@ class AgentToolRuntime {
     browserJsEnabled: boolean;
   }) {
     this.sessionId = options.sessionId;
-    this.sendMessage = options.sendMessage;
+    this.sendMessage = (message) => options.sendMessage(withForegroundMode(message, options.foregroundMode));
     this.windowId = options.windowId;
     this.targetTabId = options.targetTabId;
     this.lastPageHost = readHost(options.targetTabUrl);
@@ -500,6 +503,11 @@ function elapsedMs(startedAt: number) {
 
 function stringifyError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function withForegroundMode(message: unknown, foregroundMode: boolean) {
+  if (!isRecord(message)) throw new Error('Agent broker message must be an object');
+  return { ...message, foregroundMode };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

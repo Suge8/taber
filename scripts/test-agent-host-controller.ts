@@ -3,7 +3,7 @@ import { AGENT_HOST_IDLE_TIMEOUT_MS, createAgentHostController } from '../lib/ag
 import { instructionsByLocale, readAgentLocale } from '../lib/agent-instructions.ts';
 
 await testStartCreatesHostAndSendsPrompt();
-await testStartForwardsTargetTab();
+await testStartForwardsTargetTabAndMode();
 await testStartForwardsLocale();
 await testStartLocaleSelectsInstructions();
 testAgentInstructionsLocale();
@@ -24,12 +24,12 @@ async function testStartCreatesHostAndSendsPrompt() {
     },
   });
 
-  assert.deepEqual(await controller.startTask({ prompt: 'Summarize' }), { taskId: 'task-1' });
+  assert.deepEqual(await controller.startTask({ prompt: 'Summarize', foregroundMode: false }), { taskId: 'task-1' });
   assert.equal(lifecycle.ensureCount, 1);
-  assert.deepEqual(calls[0], { type: 'taber.agent.startTask', prompt: 'Summarize' });
+  assert.deepEqual(calls[0], { type: 'taber.agent.startTask', prompt: 'Summarize', foregroundMode: false });
 }
 
-async function testStartForwardsTargetTab() {
+async function testStartForwardsTargetTabAndMode() {
   const calls: unknown[] = [];
   const lifecycle = createLifecycle();
   const controller = createAgentHostController({
@@ -40,8 +40,8 @@ async function testStartForwardsTargetTab() {
     },
   });
 
-  await controller.startTask({ prompt: 'Fill form', windowId: 3, targetTabId: 7, targetTab: { id: 7, windowId: 3, url: 'https://example.test' } });
-  assert.deepEqual(calls[0], { type: 'taber.agent.startTask', prompt: 'Fill form', windowId: 3, targetTabId: 7, targetTab: { id: 7, windowId: 3, url: 'https://example.test' } });
+  await controller.startTask({ prompt: 'Fill form', foregroundMode: true, windowId: 3, targetTabId: 7, targetTab: { id: 7, windowId: 3, url: 'https://example.test' } });
+  assert.deepEqual(calls[0], { type: 'taber.agent.startTask', prompt: 'Fill form', foregroundMode: true, windowId: 3, targetTabId: 7, targetTab: { id: 7, windowId: 3, url: 'https://example.test' } });
 }
 
 async function testStartForwardsLocale() {
@@ -49,10 +49,10 @@ async function testStartForwardsLocale() {
   const lifecycle = createLifecycle();
   const controller = createAgentHostController({ lifecycle, sendToHost: async (message) => { calls.push(message); return { taskId: 'task-1' }; } });
 
-  await controller.startTask({ prompt: '总结', locale: 'zh' });
-  await controller.startTask({ prompt: 'Summarize', locale: 'en' });
-  assert.deepEqual(calls[0], { type: 'taber.agent.startTask', prompt: '总结', locale: 'zh' });
-  assert.deepEqual(calls[1], { type: 'taber.agent.startTask', prompt: 'Summarize', locale: 'en' });
+  await controller.startTask({ prompt: '总结', foregroundMode: false, locale: 'zh' });
+  await controller.startTask({ prompt: 'Summarize', foregroundMode: true, locale: 'en' });
+  assert.deepEqual(calls[0], { type: 'taber.agent.startTask', prompt: '总结', foregroundMode: false, locale: 'zh' });
+  assert.deepEqual(calls[1], { type: 'taber.agent.startTask', prompt: 'Summarize', foregroundMode: true, locale: 'en' });
 }
 
 async function testStartLocaleSelectsInstructions() {
@@ -65,8 +65,8 @@ async function testStartLocaleSelectsInstructions() {
     },
   });
 
-  assert.match((await controller.startTask({ prompt: '总结', locale: 'zh' }) as { instructions: string }).instructions, /你是 Taber/);
-  assert.match((await controller.startTask({ prompt: 'Summarize', locale: 'en' }) as { instructions: string }).instructions, /You are Taber/);
+  assert.match((await controller.startTask({ prompt: '总结', foregroundMode: false, locale: 'zh' }) as { instructions: string }).instructions, /你是 Taber/);
+  assert.match((await controller.startTask({ prompt: 'Summarize', foregroundMode: true, locale: 'en' }) as { instructions: string }).instructions, /You are Taber/);
 }
 
 function testAgentInstructionsLocale() {

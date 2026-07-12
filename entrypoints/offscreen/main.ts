@@ -3,6 +3,7 @@ import { browser } from 'wxt/browser';
 import { isOperableTab } from '../../lib/active-tab';
 import { browserPageScriptConsentKey } from '../../lib/browser-access';
 import { AGENT_HOST_IDLE_TIMEOUT_MS } from '../../lib/agent-host-controller';
+import { parseForegroundMode } from '../../lib/foreground-mode';
 import { collectAgentResponseText } from '../../lib/agent-stream';
 import {
   appendAgentEvent,
@@ -30,6 +31,7 @@ let runningTask:
       abortController: AbortController;
       sessionId: number;
       taskId: string;
+      foregroundMode: boolean;
       targetTabId: number;
       targetTab: TargetTabContext;
       windowId?: number;
@@ -82,6 +84,7 @@ async function startTask(message: Record<string, unknown>) {
   if (runningTask) throw new Error('A Taber task is already running');
   if (typeof message.prompt !== 'string' || message.prompt.trim() === '') throw new Error('Task prompt is required');
 
+  const foregroundMode = parseForegroundMode(message.foregroundMode);
   clearIdleCloseTimer();
   const prompt = message.prompt.trim();
   const sessionId = await resolveSessionId(message.sessionId, prompt);
@@ -90,12 +93,12 @@ async function startTask(message: Record<string, unknown>) {
   const locale = readAgentLocale(message.locale);
   const targetTab = readTargetTab(message.targetTab, message.targetTabId, windowId);
   const abortController = new AbortController();
-  runningTask = { abortController, sessionId, taskId, targetTabId: targetTab.id, targetTab, windowId };
+  runningTask = { abortController, sessionId, taskId, foregroundMode, targetTabId: targetTab.id, targetTab, windowId };
 
   showTargetOverlay(targetTab.id);
   void notifyBackground('taber.background.agentActive');
-  await emitAgentEvent(sessionId, 'task.started', { taskId, prompt, context: targetTab, instructionsVersion: AGENT_INSTRUCTIONS_VERSION });
-  void runAgentTask({ abortController, prompt, sessionId, taskId, targetTabId: targetTab.id, targetTabUrl: targetTab.url, windowId, locale });
+  await emitAgentEvent(sessionId, 'task.started', { taskId, prompt, foregroundMode, context: targetTab, instructionsVersion: AGENT_INSTRUCTIONS_VERSION });
+  void runAgentTask({ abortController, prompt, sessionId, taskId, foregroundMode, targetTabId: targetTab.id, targetTabUrl: targetTab.url, windowId, locale });
 
   return { sessionId, taskId };
 }
@@ -141,6 +144,7 @@ async function runAgentTask(task: {
   prompt: string;
   sessionId: number;
   taskId: string;
+  foregroundMode: boolean;
   targetTabId: number;
   targetTabUrl?: string;
   windowId?: number;
@@ -226,10 +230,10 @@ function clearIdleCloseTimer() {
 }
 
 async function createConfiguredRuntime(
-  task: { sessionId: number; taskId: string; windowId?: number; targetTabId: number; targetTabUrl?: string },
+  task: { sessionId: number; taskId: string; foregroundMode: boolean; windowId?: number; targetTabId: number; targetTabUrl?: string },
   instructions: string,
 ) {
-  const { sessionId, taskId, windowId, targetTabId, targetTabUrl } = task;
+  const { sessionId, taskId, foregroundMode, windowId, targetTabId, targetTabUrl } = task;
   const modelRecord = await readSelectedModel();
   const [providerRecord, reasoningEffort] = await Promise.all([
     database.providers.get(modelRecord.providerId),
@@ -254,6 +258,7 @@ async function createConfiguredRuntime(
       ...(providerOptions ? { providerOptions } : {}),
       tools: createAgentTools({
         sessionId,
+        foregroundMode,
         taskId,
         windowId,
         targetTabId,

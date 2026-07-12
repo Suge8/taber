@@ -17,6 +17,7 @@ type HostMessageSender = (message: unknown) => Promise<unknown>;
 
 type StartTaskRequest = {
   prompt: string;
+  foregroundMode: boolean;
   sessionId?: number;
   windowId?: number;
   targetTabId?: number;
