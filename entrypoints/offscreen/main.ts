@@ -44,6 +44,7 @@ let idleCloseTimer: ReturnType<typeof setTimeout> | undefined;
 const MAX_AGENT_STEPS = 20;
 const AGENT_STEP_TIMEOUT_MS = 5 * 60_000;
 const AGENT_TOTAL_TIMEOUT_MS = 30 * 60_000;
+const AUDIT_PERSISTENCE_FATAL_ERROR = '本地事件日志写入失败；上一个动作可能已完成，任务已停止以避免重复操作。';
 
 void initializeDatabase()
   .then(async () => {
@@ -98,8 +99,17 @@ async function startTask(message: Record<string, unknown>) {
   runningTask = { abortController, sessionId, taskId, foregroundMode, targetTabId: targetTab.id, targetTab, windowId };
 
   showTargetOverlay(targetTab.id);
-  void notifyBackground('taber.background.agentActive');
-  await emitAgentEvent(sessionId, 'task.started', { taskId, prompt, foregroundMode, profileAccess, context: targetTab, instructionsVersion: AGENT_INSTRUCTIONS_VERSION });
+  await notifyBackground('taber.background.agentActive');
+  try {
+    await emitAgentEvent(sessionId, 'task.started', { taskId, prompt, foregroundMode, profileAccess, context: targetTab, instructionsVersion: AGENT_INSTRUCTIONS_VERSION });
+  } catch (error) {
+    abortController.abort();
+    hideTargetOverlay(targetTab.id);
+    if (runningTask?.taskId === taskId) runningTask = undefined;
+    scheduleIdleClose();
+    await notifyBackground('taber.background.agentIdle');
+    throw error;
+  }
   void runAgentTask({ abortController, prompt, sessionId, taskId, foregroundMode, profileAccess, targetTabId: targetTab.id, targetTabUrl: targetTab.url, windowId, locale });
 
   return { sessionId, taskId };
@@ -204,12 +214,16 @@ async function runAgentTask(task: {
     await emitAgentEvent(task.sessionId, 'task.completed', { taskId: task.taskId, text });
   } catch (error) {
     const fatalError = runningTask?.taskId === task.taskId ? runningTask.fatalError : undefined;
-    if (fatalError) {
-      await emitAgentEvent(task.sessionId, 'task.failed', { taskId: task.taskId, error: fatalError });
-    } else if (task.abortController.signal.aborted) {
-      await emitAgentEvent(task.sessionId, 'task.cancelled', { taskId: task.taskId });
-    } else {
-      await emitAgentEvent(task.sessionId, 'task.failed', { taskId: task.taskId, error: stringifyError(error) });
+    try {
+      if (fatalError) {
+        await emitAgentEvent(task.sessionId, 'task.failed', { taskId: task.taskId, error: fatalError });
+      } else if (task.abortController.signal.aborted) {
+        await emitAgentEvent(task.sessionId, 'task.cancelled', { taskId: task.taskId });
+      } else {
+        await emitAgentEvent(task.sessionId, 'task.failed', { taskId: task.taskId, error: stringifyError(error) });
+      }
+    } catch (persistenceError) {
+      console.error('Taber task terminal event persistence failed', errorName(persistenceError));
     }
   } finally {
     if (runningTask?.taskId === task.taskId) {
@@ -282,6 +296,7 @@ async function createConfiguredRuntime(
         emitEvent: (type, payload) => emitAgentEvent(sessionId, type, payload),
         onTargetChanged: (change) => updateRunningTarget(sessionId, taskId, change),
         onTargetUnavailable: (error) => failRunningTask(taskId, error),
+        onAuditPersistenceFailure: () => failRunningTask(taskId, AUDIT_PERSISTENCE_FATAL_ERROR),
         browserJsEnabled,
       }),
     }),
@@ -354,11 +369,17 @@ async function updateRunningTarget(sessionId: number, taskId: string, change: { 
   if (!runningTask || runningTask.taskId !== taskId) return;
   const targetTab = readTargetTab(change.tab, change.toTabId, runningTask.windowId);
   const fromTabId = change.fromTabId ?? runningTask.targetTabId;
+  try {
+    await emitAgentEvent(sessionId, 'task.targetChanged', { taskId, fromTabId, toTabId: targetTab.id, reason: change.reason, tab: targetTab });
+  } catch (error) {
+    await failRunningTask(taskId, AUDIT_PERSISTENCE_FATAL_ERROR);
+    throw error;
+  }
+  if (!runningTask || runningTask.taskId !== taskId) return;
   if (fromTabId !== targetTab.id) hideTargetOverlay(fromTabId);
   runningTask.targetTabId = targetTab.id;
   runningTask.targetTab = targetTab;
   if (fromTabId !== targetTab.id) showTargetOverlay(targetTab.id);
-  await emitAgentEvent(sessionId, 'task.targetChanged', { taskId, fromTabId, toTabId: targetTab.id, reason: change.reason, tab: targetTab });
 }
 
 async function failRunningTask(taskId: string, error: string) {
@@ -419,6 +440,10 @@ function notifyBackground(type: string) {
 
 function sendError(sendResponse: (response?: unknown) => void) {
   return (error: unknown) => sendResponse({ error: stringifyError(error) });
+}
+
+function errorName(error: unknown) {
+  return error instanceof Error && error.name ? error.name : 'UnknownError';
 }
 
 function stringifyError(error: unknown) {

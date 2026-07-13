@@ -41,6 +41,7 @@ type AgentToolOptions = {
   emitEvent: EmitEvent;
   onTargetChanged?: (change: TargetChanged) => Promise<void>;
   onTargetUnavailable?: (error: string) => Promise<void>;
+  onAuditPersistenceFailure?: (error: string) => Promise<void>;
   runSandbox?: RunSandbox;
   browserJsEnabled?: boolean;
   profileAccess?: boolean;
@@ -106,7 +107,7 @@ export function createAgentTools(options: AgentToolOptions) {
   });
   // Skill freshness loop: after repeated tool failures, point the model back at skills it read this task.
   const staleSkillTracker: StaleSkillTracker = { readSkillPaths: [], consecutiveFailures: 0, hinted: false };
-  const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId, staleSkillTracker);
+  const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId, staleSkillTracker, options.onAuditPersistenceFailure);
   const serializeTargetOperation = createTargetOperationSerializer();
   const fsController = createFsController({ sessionId: options.sessionId, profileAccess: options.profileAccess });
   const tools = {
@@ -360,9 +361,13 @@ class AgentToolRuntime {
   private async updateTargetFromResult(reason: TargetChangeReason, tab: NavigateResult['tab']) {
     if (!tab?.id) return;
     const fromTabId = this.currentTargetTabId();
-    this.targetTabId = tab.id;
     if (fromTabId === tab.id) return;
-    await this.onTargetChanged?.({ fromTabId, toTabId: tab.id, reason, tab });
+    try {
+      await this.onTargetChanged?.({ fromTabId, toTabId: tab.id, reason, tab });
+    } catch (error) {
+      throw new AuditPersistenceError(`Target persistence failure (${auditErrorName(error)}). The browser target may have changed; the task was stopped to avoid repeating operations.`, { cause: error });
+    }
+    this.targetTabId = tab.id;
   }
 
   private async errorFromResponse(message: string) {
@@ -486,21 +491,29 @@ function createTargetOperationSerializer() {
   };
 }
 
-function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId: string | undefined, staleSkillTracker: StaleSkillTracker) {
+class AuditPersistenceError extends Error {}
+
+function createRunLogger(
+  sessionId: number,
+  emitEvent: EmitEvent,
+  taskId: string | undefined,
+  staleSkillTracker: StaleSkillTracker,
+  onAuditPersistenceFailure?: (error: string) => Promise<void>,
+) {
   return function withRunLog<Input, Output>(toolName: string, run: (input: Input, abortSignal?: AbortSignal) => Promise<Output>) {
-    return async (input: Input, options: { abortSignal?: AbortSignal; toolCallId?: string }) => {
+    return async (input: Input, options: ToolExecutionOptions) => {
       const toolCallId = options.toolCallId;
       const startedAt = nowMs();
       await emitEvent('tool.started', { taskId, toolCallId, toolName, input });
+
+      let output: Output;
       try {
-        const output = await run(input, options.abortSignal);
-        const durationMs = elapsedMs(startedAt);
-        staleSkillTracker.consecutiveFailures = 0;
-        const recorded = recordableToolOutput(toolName, input, output);
-        await appendToolRun({ sessionId, toolName, input, output: recorded, durationMs });
-        await emitEvent('tool.completed', { taskId, toolCallId, toolName, input, output: recorded, durationMs });
-        return output;
+        output = await run(input, options.abortSignal);
       } catch (error) {
+        if (error instanceof AuditPersistenceError) {
+          await onAuditPersistenceFailure?.(error.message);
+          throw error;
+        }
         staleSkillTracker.consecutiveFailures += 1;
         if (error instanceof Error && !staleSkillTracker.hinted && staleSkillTracker.consecutiveFailures >= 2 && staleSkillTracker.readSkillPaths.length > 0) {
           staleSkillTracker.hinted = true;
@@ -509,8 +522,28 @@ function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId: string
         await emitEvent('tool.failed', { taskId, toolCallId, toolName, input, error: stringifyError(error), durationMs: elapsedMs(startedAt) });
         throw error;
       }
+
+      const durationMs = elapsedMs(startedAt);
+      staleSkillTracker.consecutiveFailures = 0;
+      const recorded = recordableToolOutput(toolName, input, output);
+      try {
+        await appendToolRun({ sessionId, toolName, input, output: recorded, durationMs });
+        await emitEvent('tool.completed', { taskId, toolCallId, toolName, input, output: recorded, durationMs });
+      } catch (error) {
+        const failure = new AuditPersistenceError(
+          `Audit persistence failed after ${toolName}${toolCallId ? ` (${toolCallId})` : ''} (${auditErrorName(error)}). The action may have completed; the task was stopped to avoid repeating it.`,
+          { cause: error },
+        );
+        await onAuditPersistenceFailure?.(failure.message);
+        throw failure;
+      }
+      return output;
     };
   };
+}
+
+function auditErrorName(error: unknown) {
+  return error instanceof Error && error.name ? error.name : 'UnknownError';
 }
 
 /**

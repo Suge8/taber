@@ -89,6 +89,7 @@ try {
     }, 50);
   })`);
   assert(offscreenState.ready === true, 'offscreen not ready');
+  await verifyOffscreenStartRollback(pageCdp);
   if (failAfterEnsure) throw new Error('intentional smoke failure after offscreen ensure');
 
   console.info('runtime extension smoke passed');
@@ -101,8 +102,31 @@ try {
   if (runtime && !runtime.skipped) await runtime.close();
 }
 
-function sendRuntimeMessage(cdp, type) {
-  return evaluate(cdp, `chrome.runtime.sendMessage({ type: ${JSON.stringify(type)} })`);
+function sendRuntimeMessage(cdp, message) {
+  const payload = typeof message === 'string' ? { type: message } : message;
+  return evaluate(cdp, `chrome.runtime.sendMessage(${JSON.stringify(payload)})`);
+}
+
+async function verifyOffscreenStartRollback(cdp) {
+  const targetTab = await evaluate(cdp, `chrome.tabs.getCurrent().then((tab) => ({ id: tab?.id, windowId: tab?.windowId, title: tab?.title, url: tab?.url }))`);
+  assert(Number.isInteger(targetTab.id) && targetTab.id > 0, 'offscreen rollback smoke requires a target tab');
+
+  const request = {
+    type: 'taber.agent.startTask',
+    prompt: 'Verify failed task startup cleanup',
+    foregroundMode: false,
+    profileAccess: false,
+    windowId: targetTab.windowId,
+    targetTabId: targetTab.id,
+    targetTab,
+    locale: 'en',
+  };
+  const failed = await sendRuntimeMessage(cdp, { ...request, sessionId: Number.MAX_SAFE_INTEGER });
+  assert(typeof failed?.error === 'string' && /Session not found/.test(failed.error), 'missing-session task start did not fail at persistence');
+
+  const started = await sendRuntimeMessage(cdp, request);
+  assert(Number.isInteger(started?.sessionId) && typeof started?.taskId === 'string', `task host remained stuck after failed start: ${JSON.stringify(started)}`);
+  await sendRuntimeMessage(cdp, { type: 'taber.agent.stopTask' });
 }
 
 async function verifyNativeActionToggle(cdp, cdpOrigin, extensionId, pageTargetId) {

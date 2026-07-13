@@ -505,6 +505,129 @@ assert.deepEqual(externalTargetMessages.filter(isRecord).map((message) => messag
   assert.equal(cancellationMessages.some((message) => message.type === 'taber.getDocument.extractPage'), false);
 }
 
+// Audit persistence failures after a successful action are fatal, not ordinary tool failures.
+{
+  const { saveSkill } = await import('../lib/skills.ts');
+  await saveSkill({ name: 'Audit failure flow', hosts: ['audit.test'], description: 'd', content: 'c', source: 'user' });
+  const auditEvents: string[] = [];
+  const auditFailures: string[] = [];
+  let failCompletedEvent = false;
+  let pageActions = 0;
+  const auditTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage(message) {
+      if (isRecord(message) && message.type === 'taber.navigate.request') {
+        pageActions += 1;
+        return { action: 'currentTab', tab: { id: 7, url: 'https://audit.test' } };
+      }
+      if (isRecord(message) && message.type === 'taber.getDocument.extractPage') return { error: 'synthetic page failure after audit failure' };
+      throw new Error(`Unexpected audit failure message: ${JSON.stringify(message)}`);
+    },
+    async emitEvent(type) {
+      auditEvents.push(type);
+      if (type === 'tool.completed' && failCompletedEvent) {
+        failCompletedEvent = false;
+        throw new Error('synthetic persistence failure');
+      }
+    },
+    async onAuditPersistenceFailure(error) { auditFailures.push(error); },
+    browserJsEnabled: false,
+  });
+  await runTool(auditTools.fs, { action: 'read', path: '/skills/audit-failure-flow.md' });
+  auditEvents.length = 0;
+  failCompletedEvent = true;
+
+  await assert.rejects(
+    () => runTool(auditTools.navigate, { action: 'currentTab' }),
+    (error: Error) => /action may have completed/i.test(error.message) && !error.message.includes('Hint:'),
+  );
+  assert.equal(pageActions, 1, 'a successful page action must never be retried by the logger');
+  assert.deepEqual(auditEvents, ['tool.started', 'tool.completed']);
+  assert.equal(auditFailures.length, 1);
+  assert.match(auditFailures[0], /action may have completed/i);
+
+  // The audit failure must not increment the stale-skill tool failure counter.
+  await assert.rejects(
+    () => runTool(auditTools.getDocument, { source: 'currentPage', mode: 'selection' }),
+    (error: Error) => error.message === 'synthetic page failure after audit failure',
+  );
+}
+
+// If tool.started cannot persist, the action has not run and no uncertain-result fatal is needed.
+{
+  let pageActions = 0;
+  const auditFailures: string[] = [];
+  const startedEvents: string[] = [];
+  const startedFailureTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage() { pageActions += 1; return { action: 'currentTab', tab: { id: 7 } }; },
+    async emitEvent(type) {
+      startedEvents.push(type);
+      if (type === 'tool.started') throw new Error('synthetic started persistence failure');
+    },
+    async onAuditPersistenceFailure(error) { auditFailures.push(error); },
+    browserJsEnabled: false,
+  });
+  await assert.rejects(() => runTool(startedFailureTools.navigate, { action: 'currentTab' }), /synthetic started persistence failure/);
+  assert.equal(pageActions, 0);
+  assert.deepEqual(startedEvents, ['tool.started']);
+  assert.deepEqual(auditFailures, []);
+}
+
+// A toolRuns write failure after the action has completed has the same fatal semantics.
+{
+  const doomedSession = await createSession({ title: 'Doomed audit session' });
+  const auditEvents: string[] = [];
+  const auditFailures: string[] = [];
+  let pageActions = 0;
+  const toolRunFailureTools = createAgentTools({
+    sessionId: doomedSession.id,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage() { pageActions += 1; return { action: 'currentTab', tab: { id: 7 } }; },
+    async emitEvent(type) {
+      auditEvents.push(type);
+      if (type === 'tool.started') await database.sessions.delete(doomedSession.id);
+    },
+    async onAuditPersistenceFailure(error) { auditFailures.push(error); },
+    browserJsEnabled: false,
+  });
+  await assert.rejects(() => runTool(toolRunFailureTools.navigate, { action: 'currentTab' }), /action may have completed/i);
+  assert.equal(pageActions, 1);
+  assert.deepEqual(auditEvents, ['tool.started']);
+  assert.equal(auditFailures.length, 1);
+  assert.equal(await database.toolRuns.where('sessionId').equals(doomedSession.id).count(), 0);
+}
+
+// A target change is not committed locally when its fact event cannot persist.
+{
+  const targetMessages: Record<string, unknown>[] = [];
+  const auditFailures: string[] = [];
+  const targetFailureTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage(message) {
+      if (!isRecord(message) || message.type !== 'taber.navigate.request' || !isRecord(message.input)) throw new Error(`Unexpected target persistence message: ${JSON.stringify(message)}`);
+      targetMessages.push(message);
+      if (message.input.action === 'switchTab') return { action: 'switchTab', tab: { id: 8, url: 'https://next.example' } };
+      return { action: 'currentTab', tab: { id: message.targetTabId } };
+    },
+    async emitEvent() {},
+    async onTargetChanged() { throw new Error('synthetic target persistence failure'); },
+    async onAuditPersistenceFailure(error) { auditFailures.push(error); },
+    browserJsEnabled: false,
+  });
+  await assert.rejects(() => runTool(targetFailureTools.navigate, { action: 'switchTab', tabId: 8 }), /target persistence failure/i);
+  await runTool(targetFailureTools.navigate, { action: 'currentTab' });
+  assert.deepEqual(targetMessages.map((message) => message.targetTabId), [7, 7]);
+  assert.equal(auditFailures.length, 1);
+}
+
 const replNavigateMessages: unknown[] = [];
 const replNavigateChanges: unknown[] = [];
 const replNavigateTools = createAgentTools({
