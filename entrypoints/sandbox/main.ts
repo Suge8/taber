@@ -1,5 +1,7 @@
 import { cloneBoundaryError, normalizeBrowserJsCode } from '../../lib/browser-repl-code.ts';
+import { browserReplExecutionSources } from '../../lib/browser-repl-evaluation.ts';
 
+type AsyncFunctionConstructor = (...parameters: string[]) => (...args: unknown[]) => Promise<unknown>;
 type RunMessage = { type: 'taber.sandbox.run'; runId: string; code: string; helperNames: string[] };
 type HelperResult = {
   type: 'taber.sandbox.helperResult';
@@ -22,14 +24,27 @@ async function runCode(message: RunMessage) {
   try {
     const helperNames = message.helperNames.filter((name) => name !== 'sandbox');
     const helpers = Object.fromEntries(helperNames.map((name) => [name, createRemoteHelper(message.runId, name)]));
-    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as AsyncFunctionConstructor;
     const names = [...helperNames, 'sandbox'];
     const values = [...helperNames.map((name) => helpers[name]), runNestedSandbox];
-    const result = await new AsyncFunction(...names, `"use strict";\n${message.code}`)(...values);
+    const result = await compileBrowserRepl(AsyncFunction, names, message.code)(...values);
     postResult(message.runId, result);
   } catch (error) {
     postError(message.runId, stringifyError(error));
   }
+}
+
+function compileBrowserRepl(AsyncFunction: AsyncFunctionConstructor, names: string[], code: string) {
+  let syntaxError: unknown;
+  for (const source of browserReplExecutionSources(code)) {
+    try {
+      return AsyncFunction(...names, source);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      syntaxError = error;
+    }
+  }
+  throw syntaxError;
 }
 
 function createRemoteHelper(runId: string, name: string) {
