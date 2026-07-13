@@ -119,6 +119,7 @@ assert.deepEqual(await validateToolInput(tools.browser, { action: 'snapshot', ta
 assert.deepEqual(parseBrowserInput({ action: 'click', target: { ref: 'r1.1' }, scope: 'viewport', limit: 1 }), { action: 'click', target: { ref: 'r1.1' }, scope: 'viewport', limit: 1 });
 assert.deepEqual(parseBrowserInput({ action: 'snapshot', target: { ref: 'ignored' }, value: 'ignored', key: 'Enter' }), { action: 'snapshot' });
 assert.throws(() => parseBrowserInput({ action: 'click', target: { ref: { selector: '#save' } } }), /exactly one locator/);
+assert.throws(() => parseBrowserInput({ action: 'fill', target: { ref: 'r1.1' }, value: '' }), /To clear a field, use browserRepl/);
 assert.deepEqual(parseBrowserInput({ action: 'click', target: { x: 120.5, y: 48 } }), { action: 'click', target: { x: 120.5, y: 48 } });
 assert.throws(() => parseBrowserInput({ action: 'click', target: { x: 10 } }), /exactly one locator/);
 // Placeholder cleanup: empty strings and 0/0 coordinates yield to the one real locator.
@@ -601,6 +602,52 @@ assert.deepEqual(failedTargetChanges, []);
   // Hint fires once per task only.
   await assert.rejects(readPage(), (error: Error) => !error.message.includes('Hint:'));
 }
+
+// profile audit redaction: the model gets the raw content for the authorized
+// call, but recorded events / tool runs / evidence digests (which feed later
+// tasks' model context, timeline, and export) must never hold it.
+{
+  const { setPersonalProfile } = await import('../lib/personal-profile.ts');
+  const { projectToolEvidence } = await import('../lib/agent-event-text.ts');
+  const sentinel = 'PROFILE-SENTINEL-身份证-110101199001011234';
+  await setPersonalProfile(`姓名：测试\n证件：${sentinel}`);
+  const profileEvents: { type: string; payload: unknown }[] = [];
+  const profileTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    profileAccess: true,
+    taskId: 'task-profile',
+    async sendMessage() { throw new Error('fs must not touch the browser'); },
+    async emitEvent(type, payload) { profileEvents.push({ type, payload }); },
+  });
+  const beforeRunIds = new Set((await database.toolRuns.toArray()).map((run) => run.id));
+
+  const readResult = await runTool(profileTools.fs, { action: 'read', path: '/profile.md' }) as Record<string, unknown>;
+  assert.match(String(readResult.content), new RegExp(sentinel), 'the authorized call must return the raw profile to the model');
+
+  const completed = profileEvents.find((event) => event.type === 'tool.completed');
+  assert.ok(completed, 'fs read must emit tool.completed');
+  const completedOutput = (completed!.payload as Record<string, unknown>).output as Record<string, unknown>;
+  assert.deepEqual(completedOutput, { action: 'read', path: '/profile.md', contentChars: String(readResult.content).length, redacted: true });
+  assert.doesNotMatch(JSON.stringify(profileEvents), new RegExp(sentinel), 'no emitted event may hold profile content');
+
+  const newRuns = (await database.toolRuns.toArray()).filter((run) => !beforeRunIds.has(run.id));
+  assert.equal(newRuns.length, 1);
+  assert.doesNotMatch(JSON.stringify(newRuns[0].output), new RegExp(sentinel), 'persisted tool runs may not hold profile content');
+
+  // Evidence digest is exactly what later tasks receive as <tool_evidence>.
+  const evidence = projectToolEvidence({ id: 1, sessionId: 1, type: 'tool.completed', payload: completed!.payload, createdAt: 1 });
+  assert.ok(evidence && !evidence.includes(sentinel), 'future-task tool evidence may not hold profile content');
+
+  // ls stays content-free by construction; assert to lock it in.
+  profileEvents.length = 0;
+  await runTool(profileTools.fs, { action: 'ls' });
+  assert.doesNotMatch(JSON.stringify(profileEvents), new RegExp(sentinel));
+}
+
+// Sidepanel consumes the single-task consent on a successful start.
+const appSource = readFileSync(new URL('../entrypoints/sidepanel/App.svelte', import.meta.url), 'utf8');
+assert.match(appSource, /profileAccess = profileConsentAfterStart\(profileAccess, true\)/);
 
 database.close();
 console.info('agent tools tests passed');
