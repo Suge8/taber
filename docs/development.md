@@ -42,11 +42,11 @@ Build and zip the Chrome MV3 release artifact:
 pnpm run zip:chrome
 ```
 
-This writes `.output/taber-v0.2.1-chrome-mv3.zip` and verifies `.output/chrome-mv3/manifest.json`. Upload the zip to GitHub Releases. Users must unzip it, then load the extracted folder through Chrome **Developer mode** → **Load unpacked**.
+This writes `.output/taber-v<version>-chrome-mv3.zip` from the artifact template in `wxt.config.ts` and verifies `.output/chrome-mv3/manifest.json`. Upload the zip to GitHub Releases. Users must unzip it, then load the extracted folder through Chrome **Developer mode** → **Load unpacked**.
 
 ## Runtime browser smoke
 
-`pnpm dev` is for manual WXT development and loads `.output/chrome-mv3-dev`. Runtime smoke tests package `.output/chrome-mv3`, so they match the installable extension artifact.
+`pnpm dev` is for manual WXT development and loads `.output/chrome-mv3-dev`. Runtime smoke tests build the production-mode extension with store permissions in the isolated `.output/chrome-mv3-runtime` directory; they do not reuse the release `.output/chrome-mv3` directory.
 
 Debug release artifacts are explicit: `pnpm run build:chrome:debug` builds `.output/chrome-mv3` with `debugger`, then mirrors that verified production-mode debug artifact to `.output/chrome-mv3-dev` so it cannot be confused with a stale WXT dev-server output. Re-run `pnpm build:chrome` before packaging the store build.
 
@@ -73,10 +73,10 @@ To reuse an already loaded browser:
 TABER_CDP_ORIGIN=http://127.0.0.1:9258 TABER_EXTENSION_ID=<extension-id> pnpm run test:ci:runtime
 ```
 
-Default side panel command shortcuts:
+Suggested side panel command shortcuts:
 
-- macOS: `Command+E`
-- Windows/Linux/ChromeOS: `Alt+E`
+- macOS: `Command+Shift+Y`
+- Windows/Linux/ChromeOS: `Ctrl+Shift+Y`
 
 Chrome owns extension shortcut remapping at `chrome://extensions/shortcuts`.
 

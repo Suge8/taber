@@ -27,7 +27,7 @@ The full CI pipeline is `pnpm run test:ci`. It builds Chrome + Edge, runs a mani
 
 ```bash
 pnpm run check                       # svelte-check / tsc
-pnpm run test:unit                   # ~20 node --experimental-strip-types suites
+pnpm run test:unit                   # deterministic Node unit suites
 pnpm run test:e2e                    # deterministic in-process scenarios
 pnpm run test:database-integration   # fake-indexeddb backed
 ```
@@ -78,7 +78,7 @@ pnpm dev              # 热重载 dev 构建；pnpm dev:debug 开启 debugger �
 
 ```bash
 pnpm run check                       # svelte-check / tsc
-pnpm run test:unit                   # 约 20 个 node --experimental-strip-types 套件
+pnpm run test:unit                   # 确定性 Node 单元套件
 pnpm run test:e2e                    # 进程内确定性场景
 pnpm run test:database-integration   # fake-indexeddb 后端
 ```
