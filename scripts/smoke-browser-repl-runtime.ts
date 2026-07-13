@@ -223,14 +223,18 @@ async function assertSidepanelLocaleRuntime(extensionCdp: CdpClient, targetTabId
     modelServer = await startHangingModelServer();
     await prepareSidepanelRuntime(extensionCdp, extensionId, modelServer.baseURL, 'zh');
     await activateTab(extensionCdp, targetTabId);
-    await submitSidepanelPrompt(extensionCdp, 'Sidepanel zh runtime smoke');
-    assertModelRequest(await modelServer.readRequest(), 'zh');
+    const zhPrompt = 'Sidepanel zh runtime smoke';
+    await submitSidepanelPrompt(extensionCdp, zhPrompt);
+    const zhStarted = await waitForStartedEventByPrompt(extensionCdp, zhPrompt);
+    assertModelRequest(await waitForModelRequest(extensionCdp, modelServer, readPositiveInteger(zhStarted.sessionId, 'zh sessionId')), 'zh');
     await runtimeMessage(extensionCdp, { type: 'taber.background.stopTask' }).catch(() => undefined);
 
     await prepareSidepanelRuntime(extensionCdp, extensionId, modelServer.baseURL, 'en');
     await activateTab(extensionCdp, targetTabId);
-    await submitSidepanelPrompt(extensionCdp, 'Sidepanel en runtime smoke');
-    assertModelRequest(await modelServer.readRequest(), 'en');
+    const enPrompt = 'Sidepanel en runtime smoke';
+    await submitSidepanelPrompt(extensionCdp, enPrompt);
+    const enStarted = await waitForStartedEventByPrompt(extensionCdp, enPrompt);
+    assertModelRequest(await waitForModelRequest(extensionCdp, modelServer, readPositiveInteger(enStarted.sessionId, 'en sessionId')), 'en');
     await runtimeMessage(extensionCdp, { type: 'taber.background.stopTask' }).catch(() => undefined);
 
     completingServer = await startCompletingModelServer('Runtime ordinary browsing task completed.');
@@ -243,8 +247,11 @@ async function assertSidepanelLocaleRuntime(extensionCdp: CdpClient, targetTabId
     assert.equal(started.payload?.foregroundMode, false, 'sidepanel default mode must be captured in task.started');
     const sessionId = readPositiveInteger(started.sessionId, 'completion smoke sessionId');
     const taskId = readString(started.payload?.taskId, 'completion smoke taskId');
-    assertModelRequest(await completingServer.readRequest(), 'en');
-    assertModelRequest(await completingServer.readRequest(), 'en');
+    const configured = await waitForAgentEventByTaskId(extensionCdp, sessionId, taskId, 'runtime.configured');
+    assert.equal(configured.payload?.modelName, 'runtime-target-lock-model');
+    assert.equal(configured.payload?.toolSchemaVersion, 2);
+    assertModelRequest(await waitForModelRequest(extensionCdp, completingServer, sessionId), 'en');
+    assertModelRequest(await waitForModelRequest(extensionCdp, completingServer, sessionId), 'en');
     const completed = await waitForAgentEventByTaskId(extensionCdp, sessionId, taskId, 'task.completed');
     assert.match(String(completed.payload?.text), /Runtime ordinary browsing task completed/);
   } finally {
@@ -356,7 +363,7 @@ async function assertRuntimeTargetLock(browserCdp: CdpClient, cdpOrigin: string,
     const zhSessionId = readPositiveInteger((zhStarted as Record<string, unknown>).sessionId, 'zh sessionId');
     const zhStartedEvent = await waitForAgentEvent(extensionCdp, zhSessionId, 'task.started');
     assert.equal(zhStartedEvent.payload?.foregroundMode, false);
-    assertModelRequest(await modelServer.readRequest(), 'zh');
+    assertModelRequest(await waitForModelRequest(extensionCdp, modelServer, zhSessionId), 'zh');
     await runtimeMessage(extensionCdp, { type: 'taber.background.stopTask' });
     await waitForAgentEvent(extensionCdp, zhSessionId, 'task.cancelled');
 
@@ -374,7 +381,7 @@ async function assertRuntimeTargetLock(browserCdp: CdpClient, cdpOrigin: string,
     assert.equal(startedEvent.payload?.context?.id, firstTabId, 'task.started must lock the active tab at send time');
     assert.equal(startedEvent.payload?.context?.url, firstTab.url);
     assert.equal(startedEvent.payload?.foregroundMode, false, 'task mode must be an immutable start snapshot');
-    assertModelRequest(await modelServer.readRequest(), 'en');
+    assertModelRequest(await waitForModelRequest(extensionCdp, modelServer, sessionId), 'en');
 
     await activateTab(extensionCdp, secondTabId);
     const activeTab = await runtimeMessage(extensionCdp, { type: 'taber.background.currentTab', windowId }) as Record<string, unknown>;
@@ -417,6 +424,15 @@ async function assertRuntimeTargetLock(browserCdp: CdpClient, cdpOrigin: string,
     await modelServer?.close();
     await waitForPageReady(pageCdp).catch(() => undefined);
   }
+}
+
+async function waitForModelRequest(cdp: CdpClient, modelServer: Awaited<ReturnType<typeof startRuntimeModelServer>>, sessionId: number) {
+  return Promise.race([
+    modelServer.readRequest(10_000),
+    waitForAgentEvent(cdp, sessionId, 'task.failed').then((event) => {
+      throw new Error(`Task failed before model request: ${String(event.payload?.error ?? 'unknown error')}`);
+    }),
+  ]);
 }
 
 function assertModelRequest(modelRequest: { pathname: string; body: Record<string, unknown> }, locale: 'en' | 'zh') {
@@ -751,7 +767,7 @@ async function runSandboxIframe(cdp: CdpClient) {
       else reject(new Error(event.data.error || 'sandbox failed'));
     });
     iframe.src = chrome.runtime.getURL('/sandbox.html');
-    iframe.addEventListener('load', () => iframe.contentWindow.postMessage({ type: 'taber.sandbox.run', runId, code: 'return await sandbox("return args.value + 1", { value: 2 })', helperNames: [] }, '*'), { once: true });
+    iframe.addEventListener('load', () => iframe.contentWindow.postMessage({ type: 'taber.sandbox.run', runId, code: 'await sandbox("return args.value + 1", { value: 2 })', helperNames: [] }, '*'), { once: true });
     document.body.append(iframe);
   })`);
 }

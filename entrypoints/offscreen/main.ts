@@ -156,6 +156,7 @@ async function runAgentTask(task: {
 
 ${skillsDigest}` : instructionsByLocale[task.locale];
     const runtime = await createConfiguredRuntime(task, instructions);
+    await emitAgentEvent(task.sessionId, 'runtime.configured', { taskId: task.taskId, ...runtime.diagnostics });
     let events = (await readSessionSnapshot(task.sessionId)).agentEvents;
     const budget = { contextWindowTokens: runtime.modelRecord.contextWindowTokens, instructions, toolPromptText: runtime.toolPromptText };
     const compacted = await compactContext({
@@ -241,7 +242,7 @@ async function createConfiguredRuntime(
   ]);
   if (!providerRecord) throw new Error(`Model provider not found: ${modelRecord.providerId}`);
 
-  const [{ createAgentToolPromptEstimateText, createAgentTools }, { model, providerOptions }, browserJsEnabled] = await Promise.all([
+  const [{ AGENT_TOOL_SCHEMA_VERSION, createAgentToolPromptEstimateText, createAgentTools }, { model, providerOptions }, browserJsEnabled] = await Promise.all([
     import('../../lib/agent-tools'),
     createLanguageModelRuntime(providerRecord, modelRecord, reasoningEffort),
     readBrowserJsEnabled(),
@@ -251,6 +252,13 @@ async function createConfiguredRuntime(
     modelRecord,
     model,
     toolPromptText,
+    diagnostics: {
+      providerKind: providerRecord.kind,
+      providerName: providerRecord.name,
+      modelName: modelRecord.name,
+      reasoningEffort,
+      toolSchemaVersion: AGENT_TOOL_SCHEMA_VERSION,
+    },
     agent: new ToolLoopAgent({
       model,
       instructions,
