@@ -30,6 +30,9 @@ async function verifyExtension(extensionDir) {
   const optionalHostPermissions = manifest.optional_host_permissions ?? [];
 
   assert(manifest.manifest_version === 3, `${extensionDir}: manifest_version must be 3`);
+  assert(manifest.default_locale === 'en', `${extensionDir}: default locale must be en`);
+  assert(manifest.description === '__MSG_extensionDescription__', `${extensionDir}: description must use the localized message`);
+  await verifyLocalizedDescriptions(extensionDir);
   assert(manifest.minimum_chrome_version === '135', `${extensionDir}: minimum_chrome_version must be 135`);
   assert(manifest.background?.service_worker === 'background.js', `${extensionDir}: missing background service worker`);
   assert(manifest.side_panel?.default_path === 'sidepanel.html', `${extensionDir}: missing sidepanel entry`);
@@ -56,6 +59,18 @@ async function verifyExtension(extensionDir) {
   assert(agentHostEntryBytes <= MAX_INITIAL_ENTRY_BYTES, `${extensionDir}: AgentHost entry is ${agentHostEntryBytes} bytes; budget is ${MAX_INITIAL_ENTRY_BYTES}`);
   assert(sidepanelEntryBytes <= MAX_INITIAL_ENTRY_BYTES, `${extensionDir}: sidepanel entry is ${sidepanelEntryBytes} bytes; budget is ${MAX_INITIAL_ENTRY_BYTES}`);
   console.info(JSON.stringify({ extensionDir, hasDebugger: permissions.includes('debugger'), hasCookies: permissions.includes('cookies'), agentHostEntryBytes, sidepanelEntryBytes }));
+}
+
+async function verifyLocalizedDescriptions(extensionDir) {
+  const expected = {
+    en: 'Reads pages, operates websites, and completes tasks for you from the side panel using your existing AI subscription or API',
+    zh_CN: '在侧边栏中替你阅读网页、操作网站并完成任务，支持使用你已有的 AI 订阅或 API',
+  };
+  for (const [locale, description] of Object.entries(expected)) {
+    const messages = JSON.parse(await readFile(path.join(extensionDir, '_locales', locale, 'messages.json'), 'utf8'));
+    assert(messages.extensionDescription?.message === description, `${extensionDir}: invalid ${locale} extension description`);
+    assert(description.length <= 132, `${extensionDir}: ${locale} extension description exceeds 132 characters`);
+  }
 }
 
 async function entryScriptBytes(extensionDir, htmlFile) {
