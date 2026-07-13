@@ -4,6 +4,20 @@
   <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
 </p>
 
+## Unreleased - 2026-07-13
+
+### English
+
+#### Changed
+
+- Localized the extension description for English and Simplified Chinese browser interfaces.
+
+### 中文
+
+#### 变更
+
+- 扩展描述现已适配英文和简体中文浏览器界面。
+
 ## 0.5.1 - 2026-07-13
 
 ### English
