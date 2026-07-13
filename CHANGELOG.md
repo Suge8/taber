@@ -4,7 +4,7 @@
   <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
 </p>
 
-## Unreleased - 2026-07-13
+## 0.5.2 - 2026-07-13
 
 ### English
 
