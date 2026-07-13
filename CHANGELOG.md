@@ -4,6 +4,40 @@
   <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
 </p>
 
+## Unreleased - 2026-07-13
+
+### English
+
+#### Changed
+
+- Canonicalized model tool inputs so task targets, browser execution timeouts, and runtime-only fields remain host-owned; irrelevant placeholder fields are discarded before execution.
+- Hardened Browser REPL lifecycle management with one total budget, cancellation propagation to in-flight page commands, remaining-budget caps for helpers, and explicit `NO_EVIDENCE` results.
+- Navigation failures now return recoverable error contracts with retry guidance, while side-panel presentation distinguishes recoverable failures from task failures.
+
+#### Diagnostics
+
+- Added `runtime.configured` session diagnostics for non-secret provider/model metadata, reasoning effort, and tool schema version.
+
+#### Documentation
+
+- Documented canonical tool input boundaries and the limited Chrome offscreen runtime API.
+
+### 中文
+
+#### 变更
+
+- 规范化模型工具输入：目标标签页、浏览器执行超时和运行时字段由宿主持有，模型填入的无关占位字段会在执行前丢弃。
+- 加固 Browser REPL 生命周期：统一总预算、取消传播到在途页面命令、按剩余预算限制 helper，并在没有证据时明确返回 `NO_EVIDENCE`。
+- 导航失败改为带重试建议的可恢复错误契约；侧边栏区分可恢复工具失败与任务失败。
+
+#### 诊断
+
+- 新增 `runtime.configured` 会话诊断事件，记录非秘密的 provider/model 元数据、推理强度和工具 Schema 版本。
+
+#### 文档
+
+- 补充模型工具输入边界及 Chrome offscreen 受限 runtime API 说明。
+
 ## 0.5.0 - 2026-07-12
 
 ### English
