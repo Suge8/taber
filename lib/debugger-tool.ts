@@ -6,7 +6,6 @@ export type DebuggerAction = 'attach' | 'consoleLogs' | 'networkLogs' | 'failedR
 
 export type DebuggerInput = {
   action?: DebuggerAction;
-  tabId?: number;
   expression?: string;
   method?: string;
   params?: Record<string, unknown>;
@@ -30,7 +29,6 @@ export const debuggerInputJsonSchema = {
   additionalProperties: false,
   properties: {
     action: { type: 'string', enum: ['attach', 'consoleLogs', 'networkLogs', 'failedRequests', 'diagnostics', 'accessibilitySnapshot', 'evaluate', 'cdp', 'detach'], description: 'Debugger action. Defaults to failedRequests.' },
-    tabId: { type: 'integer', minimum: 1 },
     expression: { type: 'string', description: 'Main world JavaScript expression for evaluate.' },
     method: { type: 'string', description: 'CDP method for cdp action. Cookie methods are blocked.' },
     params: { type: 'object', additionalProperties: true },
@@ -60,10 +58,10 @@ export function createDebuggerController(options: { debuggerApi: DebuggerApi; ge
   options.debuggerApi.onEvent.addListener(onEvent);
   options.debuggerApi.onDetach?.addListener(onDetach);
 
-  async function run(value: unknown): Promise<DebuggerResult> {
+  async function run(value: unknown, hostTabId?: number): Promise<DebuggerResult> {
     const input = parseDebuggerInput(value);
     const action = input.action ?? 'failedRequests';
-    const tabId = input.tabId ?? (await options.getCurrentTabId());
+    const tabId = hostTabId ?? (await options.getCurrentTabId());
     if (action === 'detach') return detach(tabId);
     await ensureAttached(tabId);
     if (action === 'attach') return { action, attached: true, tabId };
@@ -172,7 +170,6 @@ export function parseDebuggerInput(value: unknown): DebuggerInput {
   if (!isRecord(value)) throw new Error('debugger input must be an object');
   const input: DebuggerInput = {};
   if ('action' in value) input.action = readAction(value.action);
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
   if ('expression' in value) input.expression = readString(value.expression, 'expression');
   if ('method' in value) input.method = readString(value.method, 'method');
   if ('params' in value) input.params = readParams(value.params);

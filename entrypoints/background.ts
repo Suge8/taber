@@ -193,11 +193,11 @@ async function debug(message: Record<string, unknown>) {
   const targetTabId = readTargetTabId(message.targetTabId);
   if (targetTabId !== undefined) {
     await prepareAgentTarget(message, Number.isInteger(input.tabId) ? Number(input.tabId) : undefined);
-    return debuggerController.run({ ...input, tabId: targetTabId });
+    return debuggerController.run(input, targetTabId);
   }
-  if (Number.isInteger(input.tabId) && Number(input.tabId) > 0) return debuggerController.run(input);
+  if (Number.isInteger(input.tabId) && Number(input.tabId) > 0) return debuggerController.run(input, Number(input.tabId));
   const tab = await currentTab(readWindowId(message.windowId));
-  return debuggerController.run({ ...input, tabId: tab.id });
+  return debuggerController.run(input, tab.id);
 }
 
 function navigate(message: Record<string, unknown>) {
@@ -326,9 +326,7 @@ async function captureVisibleTab(message: Record<string, unknown>) {
   if (input.source !== 'viewport') throw new Error('taber.extractImage.captureVisibleTab only supports source=viewport');
   const foregroundMode = parseForegroundMode(message.foregroundMode);
   const targetTabId = readTargetTabId(message.targetTabId);
-  if (targetTabId !== undefined && input.tabId !== undefined && input.tabId !== targetTabId) throw targetMismatchError(targetTabId, input.tabId);
-  const captureTabId = targetTabId ?? input.tabId;
-  const tab = captureTabId === undefined ? await currentTab(readWindowId(message.windowId)) : await requireTargetTab(captureTabId);
+  const tab = targetTabId === undefined ? await currentTab(readWindowId(message.windowId)) : await requireTargetTab(targetTabId);
   const windowId = requireWindowId(tab);
 
   // Chrome only captures the active tab. Reject any screenshot taken across a
