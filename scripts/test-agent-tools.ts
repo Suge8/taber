@@ -362,6 +362,149 @@ externalTargetTabId = 12;
 await (externalTargetTools.navigate.execute as (input: unknown, options: unknown) => Promise<unknown>)({ action: 'currentTab' }, { abortSignal: new AbortController().signal });
 assert.deepEqual(externalTargetMessages.filter(isRecord).map((message) => message.targetTabId), [7, 12]);
 
+// Target-bound calls follow model call order while URL/file/fs work remains parallel.
+{
+  let currentTargetTabId = 7;
+  let releaseSwitch: (value: unknown) => void = () => undefined;
+  const switchResult = new Promise<unknown>((resolve) => { releaseSwitch = resolve; });
+  const concurrentMessages: Record<string, unknown>[] = [];
+  const concurrentTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    getTargetTabId: () => currentTargetTabId,
+    async sendMessage(message) {
+      if (!isRecord(message)) throw new Error('Expected a concurrent message object');
+      concurrentMessages.push(message);
+      if (message.type === 'taber.navigate.request' && isRecord(message.input) && message.input.action === 'switchTab') return switchResult;
+      if (message.type === 'taber.chromeApi.request' && message.action === 'webNavigation.getAllFrames') return [{ frameId: 0, parentFrameId: -1, url: 'https://next.example' }];
+      if (message.type === 'taber.chromeApi.request' && message.action === 'userScripts.execute') {
+        return [{ result: { ok: true, value: { ok: true, action: 'snapshot', state: { url: 'https://next.example', elements: [] } } } }];
+      }
+      throw new Error(`Unexpected concurrent message: ${JSON.stringify(message)}`);
+    },
+    async emitEvent() {},
+    async onTargetChanged(change) { currentTargetTabId = change.toTabId; },
+    browserJsEnabled: false,
+  });
+
+  const switchOperation = runTool(concurrentTools.navigate, { action: 'switchTab', tabId: 8 });
+  const browserOperation = runTool(concurrentTools.browser, { action: 'snapshot' });
+  await runTool(concurrentTools.fs, { action: 'write', path: '/workspace/parallel.txt', content: 'file lane' });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('synthetic URL lane'); };
+  try {
+    const [urlDocument, fileDocument] = await Promise.all([
+      runTool(concurrentTools.getDocument, { source: 'url', url: 'https://parallel.test/', mode: 'page' }),
+      runTool(concurrentTools.getDocument, { source: 'file', name: 'parallel.txt' }),
+    ]);
+    assert.equal((urlDocument as { code?: string }).code, 'REMOTE_FETCH_FAILED');
+    assert.equal((fileDocument as { ok?: boolean }).ok, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(concurrentMessages.some((message) => message.type === 'taber.chromeApi.request'), false, 'browser must wait for the preceding target switch');
+
+  releaseSwitch({ action: 'switchTab', tab: { id: 8, url: 'https://next.example' } });
+  await Promise.all([switchOperation, browserOperation]);
+  const browserMessages = concurrentMessages.filter((message) => message.type === 'taber.chromeApi.request');
+  assert.ok(browserMessages.length > 0);
+  assert.equal(browserMessages.every((message) => message.targetTabId === 8), true, 'browser requests must use the switched target');
+  const userScriptRequest = browserMessages.find((message) => message.action === 'userScripts.execute');
+  const injection = Array.isArray(userScriptRequest?.args) && isRecord(userScriptRequest.args[0]) ? userScriptRequest.args[0] : {};
+  assert.equal(isRecord(injection.target) ? injection.target.tabId : undefined, 8);
+}
+
+// Opening a new target also completes before the next target-bound operation starts.
+{
+  let currentTargetTabId = 7;
+  let releaseOpen: (value: unknown) => void = () => undefined;
+  const openResult = new Promise<unknown>((resolve) => { releaseOpen = resolve; });
+  const openMessages: Record<string, unknown>[] = [];
+  const openTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    getTargetTabId: () => currentTargetTabId,
+    async sendMessage(message) {
+      if (!isRecord(message)) throw new Error('Expected an open-new message object');
+      openMessages.push(message);
+      if (message.type === 'taber.navigate.request') return openResult;
+      if (message.type === 'taber.getDocument.extractPage') return { title: 'New target', url: 'https://new.example', selection: 'new target', html: '' };
+      throw new Error(`Unexpected open-new message: ${JSON.stringify(message)}`);
+    },
+    async emitEvent() {},
+    async onTargetChanged(change) { currentTargetTabId = change.toTabId; },
+    browserJsEnabled: false,
+  });
+
+  const openOperation = runTool(openTools.navigate, { action: 'open', target: 'new', url: 'https://new.example' });
+  const documentOperation = runTool(openTools.getDocument, { source: 'currentPage', mode: 'selection' });
+  await runTool(openTools.fs, { action: 'ls' });
+  assert.equal(openMessages.some((message) => message.type === 'taber.getDocument.extractPage'), false, 'current-page reads must wait for open-new target updates');
+  releaseOpen({ action: 'open', tab: { id: 9, url: 'https://new.example' } });
+  await Promise.all([openOperation, documentOperation]);
+  const extractMessage = openMessages.find((message) => message.type === 'taber.getDocument.extractPage');
+  assert.equal(extractMessage?.tabId, 9);
+  assert.equal(extractMessage?.targetTabId, 9);
+}
+
+// A failed target operation must not poison the queue.
+{
+  const failureMessages: Record<string, unknown>[] = [];
+  const failureTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage(message) {
+      if (!isRecord(message) || message.type !== 'taber.navigate.request' || !isRecord(message.input)) throw new Error(`Unexpected queue failure message: ${JSON.stringify(message)}`);
+      failureMessages.push(message);
+      if (message.input.action === 'reload') throw new Error('synthetic queued failure');
+      return { action: 'currentTab', tab: { id: 7, url: 'https://example.test' } };
+    },
+    async emitEvent() {},
+    browserJsEnabled: false,
+  });
+  const failedOperation = runTool(failureTools.navigate, { action: 'reload' });
+  const nextOperation = runTool(failureTools.navigate, { action: 'currentTab' });
+  await assert.rejects(failedOperation, /synthetic queued failure/);
+  assert.equal((await nextOperation as { action?: string }).action, 'currentTab');
+  assert.deepEqual(failureMessages.map((message) => isRecord(message.input) ? message.input.action : undefined), ['reload', 'currentTab']);
+}
+
+// Aborting while queued must not execute any page side effect when the turn arrives.
+{
+  let releaseReload: (value: unknown) => void = () => undefined;
+  const reloadResult = new Promise<unknown>((resolve) => { releaseReload = resolve; });
+  const cancellationMessages: Record<string, unknown>[] = [];
+  const cancellationTools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage(message) {
+      if (!isRecord(message)) throw new Error('Expected a cancellation message object');
+      cancellationMessages.push(message);
+      if (message.type === 'taber.navigate.request') return reloadResult;
+      if (message.type === 'taber.getDocument.extractPage') return { title: 'Must not run', url: 'https://example.test', selection: 'unexpected', html: '' };
+      throw new Error(`Unexpected cancellation message: ${JSON.stringify(message)}`);
+    },
+    async emitEvent() {},
+    browserJsEnabled: false,
+  });
+  const reloadOperation = runTool(cancellationTools.navigate, { action: 'reload' });
+  const abortController = new AbortController();
+  const cancelledOperation = (cancellationTools.getDocument.execute as (input: unknown, options: unknown) => Promise<unknown>)(
+    { source: 'currentPage', mode: 'selection' },
+    { abortSignal: abortController.signal },
+  );
+  await runTool(cancellationTools.fs, { action: 'ls' });
+  abortController.abort();
+  releaseReload({ action: 'reload', tab: { id: 7, url: 'https://example.test' } });
+  await reloadOperation;
+  await assert.rejects(cancelledOperation, /Task aborted/);
+  assert.equal(cancellationMessages.some((message) => message.type === 'taber.getDocument.extractPage'), false);
+}
+
 const replNavigateMessages: unknown[] = [];
 const replNavigateChanges: unknown[] = [];
 const replNavigateTools = createAgentTools({

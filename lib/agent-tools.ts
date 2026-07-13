@@ -107,33 +107,34 @@ export function createAgentTools(options: AgentToolOptions) {
   // Skill freshness loop: after repeated tool failures, point the model back at skills it read this task.
   const staleSkillTracker: StaleSkillTracker = { readSkillPaths: [], consecutiveFailures: 0, hinted: false };
   const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId, staleSkillTracker);
+  const serializeTargetOperation = createTargetOperationSerializer();
   const fsController = createFsController({ sessionId: options.sessionId, profileAccess: options.profileAccess });
   const tools = {
     getDocument: tool<GetDocumentInput, GetDocumentResult>({
       description: getDocumentDescription,
       inputSchema: jsonSchema<GetDocumentInput>(getDocumentInputJsonSchema, validator(parseGetDocumentInput)),
-      execute: withRunLog('getDocument', (input, abortSignal) => runtime.getDocument(input, abortSignal)),
+      execute: serializeTargetOperation(withRunLog('getDocument', (input, abortSignal) => runtime.getDocument(input, abortSignal)), (input) => input.source === 'currentPage'),
     }),
     extractImage: tool<ExtractImageInput, ExtractImageResult>({
       description: extractImageDescription,
       inputSchema: jsonSchema<ExtractImageInput>(extractImageInputJsonSchema, validator(parseExtractImageInput)),
-      execute: withRunLog('extractImage', (input, abortSignal) => runtime.extractImage(input, abortSignal)),
+      execute: serializeTargetOperation(withRunLog('extractImage', (input, abortSignal) => runtime.extractImage(input, abortSignal))),
       toModelOutput: extractImageToModelOutput,
     }),
     navigate: tool<NavigateInput, NavigateToolResult>({
       description: navigateDescription,
       inputSchema: jsonSchema<NavigateInput>(navigateInputJsonSchema, validator(parseNavigateInput)),
-      execute: withRunLog('navigate', (input, abortSignal) => runtime.navigate(input, abortSignal)),
+      execute: serializeTargetOperation(withRunLog('navigate', (input, abortSignal) => runtime.navigate(input, abortSignal)), (input) => input.action !== 'listTabs'),
     }),
     browser: tool<BrowserInput, BrowserResult>({
       description: browserDescription,
       inputSchema: jsonSchema<BrowserInput>(browserInputJsonSchema, validator(parseBrowserInput)),
-      execute: withRunLog('browser', (input, abortSignal) => runtime.browser(input, abortSignal)),
+      execute: serializeTargetOperation(withRunLog('browser', (input, abortSignal) => runtime.browser(input, abortSignal))),
     }),
     browserRepl: tool<BrowserReplInput, BrowserReplResult>({
       description: browserReplDescription(browserJsEnabled),
       inputSchema: jsonSchema<BrowserReplInput>(createBrowserReplInputJsonSchema({ browserJsEnabled }), validator(parseBrowserReplInput)),
-      execute: withRunLog('browserRepl', (input, abortSignal) => runtime.browserRepl(input, abortSignal)),
+      execute: serializeTargetOperation(withRunLog('browserRepl', (input, abortSignal) => runtime.browserRepl(input, abortSignal))),
     }),
     fs: tool<FsInput, FsResult>({
       description: fsDescription,
@@ -154,7 +155,7 @@ export function createAgentTools(options: AgentToolOptions) {
     debugger: tool<DebuggerInput, DebuggerResult>({
       description: debuggerDescription,
       inputSchema: jsonSchema<DebuggerInput>(debuggerInputJsonSchema, validator(parseDebuggerInput)),
-      execute: withRunLog('debugger', (input, abortSignal) => runtime.debugger(input, abortSignal)),
+      execute: serializeTargetOperation(withRunLog('debugger', (input, abortSignal) => runtime.debugger(input, abortSignal))),
     }),
   };
 }
@@ -464,6 +465,26 @@ async function shortContentHash(content: string) {
 }
 
 type StaleSkillTracker = { readSkillPaths: string[]; consecutiveFailures: number; hinted: boolean };
+
+type ToolExecutionOptions = { abortSignal?: AbortSignal; toolCallId?: string };
+
+function createTargetOperationSerializer() {
+  let tail = Promise.resolve();
+  return function serializeTargetOperation<Input, Output>(
+    run: (input: Input, options: ToolExecutionOptions) => Promise<Output>,
+    isTargetBound: (input: Input) => boolean = () => true,
+  ) {
+    return (input: Input, options: ToolExecutionOptions) => {
+      if (!isTargetBound(input)) return run(input, options);
+      const result = tail.then(() => {
+        if (options.abortSignal?.aborted) throw new Error('Task aborted');
+        return run(input, options);
+      });
+      tail = result.then(() => undefined, () => undefined);
+      return result;
+    };
+  };
+}
 
 function createRunLogger(sessionId: number, emitEvent: EmitEvent, taskId: string | undefined, staleSkillTracker: StaleSkillTracker) {
   return function withRunLog<Input, Output>(toolName: string, run: (input: Input, abortSignal?: AbortSignal) => Promise<Output>) {
