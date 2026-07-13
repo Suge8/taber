@@ -73,9 +73,9 @@ function testAgentInstructionsLocale() {
   assert.equal(readAgentLocale('zh'), 'zh');
   assert.equal(readAgentLocale('fr'), 'en');
   assert.match(instructionsByLocale.zh, /你是 Taber/);
-  assert.match(instructionsByLocale.zh, /失败 3 次/);
+  assert.match(instructionsByLocale.zh, /不要原样重试/);
   assert.match(instructionsByLocale.en, /You are Taber/);
-  assert.match(instructionsByLocale.en, /After 3 failures/);
+  assert.match(instructionsByLocale.en, /Do not retry unchanged input/);
 }
 
 async function testStopForwardsOnlyWhenHostExists() {

@@ -112,6 +112,10 @@ console.log('test-skills passed');
   assert.equal(github.source, 'agent');
   assert.equal(github.description, 'my custom notes');
   assert.equal(seeded.filter((skill) => skill.source === 'builtin').length, builtinSkillSeeds.length - 1);
+  const douyin = seeded.find((skill) => skill.name === 'Douyin browsing');
+  assert.match(douyin?.content ?? '', /https:\/\/www\.douyin\.com\/hot/);
+  assert.match(douyin?.content ?? '', /browser snapshot/);
+  assert.match(douyin?.content ?? '', /Never infer what an unlabeled card number means/);
   assert.deepEqual((await matchSkillsForUrl('https://zh.wikipedia.org/wiki/X')).map((skill) => skill.name), ['Wikipedia REST API']);
   assert.match(await skillsDigestForTask('https://news.ycombinator.com/', 'top stories'), /hacker-news-data-api\.md/);
   // A prompt mentioning the site surfaces its skill even when the current tab is elsewhere.
