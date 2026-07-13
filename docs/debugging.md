@@ -5,6 +5,7 @@ Taber 的全部运行过程以 append-only 事件流存在扩展的 IndexedDB（
 ## 事件类型速览
 
 - `task.started` / `task.completed` / `task.failed` / `task.cancelled`：任务生命周期
+- `runtime.configured`：非秘密的 provider/model、推理强度和工具 Schema 版本
 - `tool.input.started` / `tool.input.appended` / `tool.input.completed`：模型生成工具入参
 - `tool.started` / `tool.completed` / `tool.failed`：工具执行。**只有 `tool.input.*` 而无后续事件 = 入参未通过校验**（AI SDK 直接打回模型，不执行工具）；这类失败会以 `tool.failed`（含 error，无 durationMs）记录
 - `reasoning.*` / `message.*`：模型思考与回复
@@ -40,6 +41,8 @@ TABER_CDP_ORIGIN=http://127.0.0.1:9333 node --experimental-strip-types scripts/d
 
 - 工具在 UI 长期"等待中"（旧版本）：入参校验失败。看 `tool.input.completed` 的 input 与紧随的 `tool.failed` error
 - navigate 反复超时：`navigation.status: "timeout"` 属降级成功，`tab.url` 已在目标域即页面可用，不应重试
+- 工具 `completed` 但 `output.ok:false`：这是带 `code/retryHint` 的可恢复失败，UI 显示警告而非任务失败
+- `browserRepl` 返回 `NO_EVIDENCE`：多语句代码没有返回结果且没有 helper 证据；不要重复可能已发生的副作用，改用 browser snapshot 验证
 - 模型反复 snapshot/检查：对照 `tool.completed` 的 output 看快照是否包含目标元素（默认 limit 30）
 - `tool.input.appended` 在完整 JSON 后继续出现垃圾，或在 JSON 字符串外连续输出超过 512 个结构空白：模型工具参数生成退化。字符串内容内的空白不触发该规则
 - reasoning/message 连续输出超过 512 个空白字符，或单 step 生成内容超过 4,000,000 字符：流守护会中止上游并记录 `task.failed`
