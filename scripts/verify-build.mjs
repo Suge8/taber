@@ -36,6 +36,8 @@ async function verifyExtension(extensionDir) {
   assert(manifest.minimum_chrome_version === '135', `${extensionDir}: minimum_chrome_version must be 135`);
   assert(manifest.background?.service_worker === 'background.js', `${extensionDir}: missing background service worker`);
   assert(manifest.side_panel?.default_path === 'sidepanel.html', `${extensionDir}: missing sidepanel entry`);
+  assert(manifest.commands?._execute_action, `${extensionDir}: sidepanel shortcut must trigger the native extension action`);
+  assert(manifest.commands._execute_action.suggested_key?.default === 'Ctrl+Shift+Y' && manifest.commands._execute_action.suggested_key?.mac === 'Command+Shift+Y', `${extensionDir}: sidepanel shortcut conflicts with a browser shortcut`);
   assert(manifest.sandbox?.pages?.includes('sandbox.html'), `${extensionDir}: missing sandbox entry`);
   assert(!hostPermissions.includes('<all_urls>'), `${extensionDir}: production host_permissions must not include <all_urls>`);
   assert(hostPermissions.includes('https://auth.openai.com/*'), `${extensionDir}: missing auth.openai.com host permission`);

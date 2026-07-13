@@ -1,6 +1,6 @@
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { connectCdp, connectTarget, evaluate, fetchJson, hasCdpEndpoint, waitForTarget } from './cdp-client.mjs';
+import { connectCdp, connectTarget, delay, evaluate, fetchJson, hasCdpEndpoint, waitForTarget } from './cdp-client.mjs';
 import { prepareRuntimeBrowser } from './runtime-browser.mjs';
 
 const drySmoke = process.argv.includes('--dry-smoke');
@@ -63,6 +63,7 @@ try {
   await sendRuntimeMessage(pageCdp, 'taber.offscreen.close');
   assert((await sendRuntimeMessage(pageCdp, 'taber.offscreen.hasDocument')) === false, 'offscreen was not reset');
   await verifySidepanelApi(runtime.cdpOrigin, runtime.extensionId);
+  await verifyNativeActionToggle(browserCdp, runtime.cdpOrigin, runtime.extensionId, pageTarget.targetId);
 
   assert((await sendRuntimeMessage(pageCdp, 'taber.offscreen.ensure')) === true, 'offscreen ensure failed');
   assert((await sendRuntimeMessage(pageCdp, 'taber.offscreen.hasDocument')) === true, 'offscreen hasDocument false');
@@ -102,6 +103,36 @@ try {
 
 function sendRuntimeMessage(cdp, type) {
   return evaluate(cdp, `chrome.runtime.sendMessage({ type: ${JSON.stringify(type)} })`);
+}
+
+async function verifyNativeActionToggle(cdp, cdpOrigin, extensionId, pageTargetId) {
+  const [{ targetInfos }, { targetInfo }] = await Promise.all([
+    cdp.send('Target.getTargets', { filter: [{ type: 'tab', exclude: false }] }),
+    cdp.send('Target.getTargetInfo', { targetId: pageTargetId }),
+  ]);
+  const targetId = targetInfos.find((target) => target.url === targetInfo.url)?.targetId;
+  if (!targetId) throw new Error('native action smoke requires a tab target');
+  await waitForSidepanelTarget(cdpOrigin, extensionId, false);
+  await cdp.send('Extensions.triggerAction', { id: extensionId, targetId });
+  await waitForSidepanelTarget(cdpOrigin, extensionId, true);
+  await cdp.send('Extensions.triggerAction', { id: extensionId, targetId });
+  await waitForSidepanelTarget(cdpOrigin, extensionId, false);
+  await cdp.send('Extensions.triggerAction', { id: extensionId, targetId });
+  await waitForSidepanelTarget(cdpOrigin, extensionId, true);
+  await cdp.send('Extensions.triggerAction', { id: extensionId, targetId });
+  await waitForSidepanelTarget(cdpOrigin, extensionId, false);
+}
+
+async function waitForSidepanelTarget(cdpOrigin, extensionId, expectedOpen) {
+  const sidepanelUrl = `chrome-extension://${extensionId}/sidepanel.html`;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const targets = await fetchJson(`${cdpOrigin}/json/list`);
+    const open = targets.some((target) => target.url === sidepanelUrl);
+    if (open === expectedOpen) return;
+    await delay(50);
+  }
+  throw new Error(`native action did not ${expectedOpen ? 'open' : 'close'} the sidepanel`);
 }
 
 async function verifySidepanelApi(cdpOrigin, extensionId) {

@@ -82,11 +82,12 @@ try {
     const recoveryReport = await evaluateStable(pageCdp, recoveryReportExpression());
     const i18nReport = await runI18nPhase(pageCdp);
     const foregroundModeReport = await runForegroundModePhase(pageCdp);
+    const shortcutReport = await runShortcutPhase(pageCdp);
     await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
     const historyReport = await runHistoryPhase(pageCdp);
     const multiTurnReport = await runMultiTurnPhase(pageCdp);
 
-    const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, idleSources: idleSourcesReport, recovery: recoveryReport, foregroundMode: foregroundModeReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
+    const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, idleSources: idleSourcesReport, recovery: recoveryReport, foregroundMode: foregroundModeReport, shortcut: shortcutReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
     console.log(JSON.stringify(output, null, 2));
     assertAll('onboarding', onboardingReport);
     assertAll('browserControlExistingModel', browserControlExistingModelReport);
@@ -95,6 +96,7 @@ try {
     assertAll('idleSources', idleSourcesReport);
     assertAll('recovery', recoveryReport);
     assertAll('foregroundMode', foregroundModeReport);
+    assertAll('shortcut', shortcutReport);
     assertAll('i18n', i18nReport);
     assertAll('history', historyReport);
     assertAll('multiTurn', multiTurnReport);
@@ -590,6 +592,35 @@ async function runForegroundModePhase(cdp) {
   };
 }
 
+async function runShortcutPhase(cdp) {
+  const mac = await evaluate(cdp, `navigator.platform.toLowerCase().includes('mac')`);
+  await evaluate(cdp, `localStorage.setItem('__taberSmokeShortcut', 'Ctrl+Alt+K')`);
+  await evaluate(cdp, `(() => {
+    const button = document.querySelector('button[aria-label="Settings"]');
+    if (!button) throw new Error('settings button not found');
+    button.click();
+  })()`);
+  const initialShortcut = await waitForShortcutLabel(cdp, mac ? '⌃ ⌥ K' : 'Ctrl Alt K');
+  await evaluate(cdp, `(() => {
+    localStorage.setItem('__taberSmokeShortcut', 'Alt+Shift+P');
+    window.dispatchEvent(new Event('focus'));
+  })()`);
+  const refreshedShortcut = await waitForShortcutLabel(cdp, mac ? '⌥ ⇧ P' : 'Alt Shift P');
+  await evaluate(cdp, `document.querySelector('[data-slot="dialog-close"]')?.click()`);
+  return { readsAssignedShortcut: initialShortcut, refreshesAfterShortcutEdit: refreshedShortcut };
+}
+
+async function waitForShortcutLabel(cdp, expected) {
+  return evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const labels = [...document.querySelectorAll('kbd')].map((node) => node.textContent?.trim());
+      if (labels.includes(${JSON.stringify(expected)})) { clearInterval(timer); resolve(true); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('shortcut label did not update: ' + JSON.stringify({ expected: ${JSON.stringify(expected)}, labels }))); }
+    }, 20);
+  })`);
+}
+
 async function readForegroundModeUi(cdp) {
   return evaluate(cdp, `(() => {
     const button = document.querySelector('[data-foreground-mode]');
@@ -877,6 +908,9 @@ async function runHistoryPhase(cdp) {
 
   const oldTransition = await selectHistoryItem(cdp, 'Older session', ['2', '1']);
   await waitForSessionView(cdp, '1');
+  await reloadSidepanel(cdp);
+  await waitForSessionView(cdp, '1');
+  const selectedSessionRestored = await evaluate(cdp, `document.body.innerText.includes('Old answer only.')`);
 
   await evaluate(cdp, `(() => {
     const style = document.createElement('style');
@@ -905,20 +939,49 @@ async function runHistoryPhase(cdp) {
 
   await openHistory(cdp);
   const rapidLatestThenNewKeepsNew = await selectHistoryThenNewRapidly(cdp);
+  await reloadSidepanel(cdp);
+  await waitForSessionView(cdp, 'new');
+  const blankSessionRestored = await evaluate(cdp, `document.querySelector('[data-session-view="new"]') !== null`);
 
+  await evaluate(cdp, `window.__taberSmokeStartDelayMs = 300`);
+  await submitPrompt(cdp, 'Delayed new prompt');
   await openHistory(cdp);
   await selectHistoryItem(cdp, 'Older session', ['new', '1']);
   await waitForSessionView(cdp, '1');
+  await delay(500);
+  await reloadSidepanel(cdp);
+  await waitForSessionView(cdp, '1');
+  const delayedStartKeepsLastSelection = await evaluate(cdp, `document.body.innerText.includes('Old answer only.')`);
 
-  return evaluate(cdp, `(() => ({
+  await openHistory(cdp);
+  await selectHistoryItem(cdp, 'New session', ['1', 'new']);
+  await waitForSessionView(cdp, 'new');
+  await submitPrompt(cdp, 'Persisted new prompt');
+  const createdSessionId = await waitForMaterializedSessionView(cdp);
+  await evaluateStable(cdp, waitForTextExpression('Persisted new prompt done.'));
+  await reloadSidepanel(cdp);
+  await waitForSessionView(cdp, String(createdSessionId));
+  const firstStartSessionRestored = await evaluate(cdp, `document.body.innerText.includes('Persisted new prompt done.')`);
+
+  await openHistory(cdp);
+  await selectHistoryItem(cdp, 'Older session', [String(createdSessionId), '1']);
+  await waitForSessionView(cdp, '1');
+
+  const report = await evaluate(cdp, `(() => ({
     ...${JSON.stringify(listReport)},
     historyExitEnterOverlap: ${oldTransition},
     currentSessionPositioned: ${currentSessionPositioned},
     newSessionExitEnterOverlap: ${newTransition},
     returnHistoryExitEnterOverlap: ${returnTransition},
     rapidLatestThenNewKeepsNew: ${rapidLatestThenNewKeepsNew},
+    selectedSessionRestored: ${selectedSessionRestored},
+    blankSessionRestored: ${blankSessionRestored},
+    delayedStartKeepsLastSelection: ${delayedStartKeepsLastSelection},
+    firstStartSessionRestored: ${firstStartSessionRestored},
     switchedToOldTimeline: document.body.innerText.includes('Old answer only.') && !document.body.innerText.includes('Summary ready.'),
   }))()`);
+  await removeCreatedHistorySessions(cdp);
+  return report;
 }
 
 async function runActivityStatusPhase(cdp) {
@@ -1030,6 +1093,48 @@ async function waitForSessionView(cdp, expected) {
       if (views.length === 1 && views[0] === ${JSON.stringify(expected)}) { clearInterval(timer); resolve(true); return; }
       if (Date.now() > deadline) { clearInterval(timer); reject(new Error('session view did not settle: ' + JSON.stringify({ expected: ${JSON.stringify(expected)}, views }))); }
     }, 20);
+  })`);
+}
+
+async function waitForMaterializedSessionView(cdp) {
+  return evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const timer = setInterval(() => {
+      const views = [...document.querySelectorAll('[data-session-view]')].map((node) => node.getAttribute('data-session-view'));
+      const sessionId = views.length === 1 ? Number(views[0]) : NaN;
+      if (Number.isInteger(sessionId) && sessionId > 0) { clearInterval(timer); resolve(sessionId); return; }
+      if (Date.now() > deadline) { clearInterval(timer); reject(new Error('new session did not materialize: ' + JSON.stringify({ views }))); }
+    }, 20);
+  })`);
+}
+
+async function removeCreatedHistorySessions(cdp) {
+  return evaluate(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const stores = ['sessions', 'agentEvents', 'toolRuns', 'files'].filter((name) => db.objectStoreNames.contains(name));
+      const tx = db.transaction(stores, 'readwrite');
+      const sessions = tx.objectStore('sessions');
+      const sessionRequest = sessions.getAll();
+      sessionRequest.onsuccess = () => {
+        const removedIds = sessionRequest.result
+          .filter((session) => session.title === 'Delayed new prompt' || session.title === 'Persisted new prompt')
+          .map((session) => session.id);
+        for (const sessionId of removedIds) sessions.delete(sessionId);
+        for (const storeName of ['agentEvents', 'toolRuns', 'files']) {
+          if (!stores.includes(storeName)) continue;
+          const store = tx.objectStore(storeName);
+          const records = store.getAll();
+          records.onsuccess = () => {
+            for (const record of records.result) if (removedIds.includes(record.sessionId)) store.delete(record.id);
+          };
+        }
+      };
+      tx.oncomplete = () => { db.close(); resolve(true); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
   })`);
 }
 
@@ -1406,6 +1511,17 @@ function installSendMessageStubExpression() {
     window.__taberStartMessages = [];
     window.__taberSwitchMessages = [];
     window.__taberSmokeUserScriptsAvailable = true;
+    localStorage.setItem('__taberSmokeShortcut', localStorage.getItem('__taberSmokeShortcut') || 'Ctrl+Shift+Y');
+    const patchCommands = (api) => {
+      if (!api?.commands || api.commands.__taberSidepanelSmoke) return;
+      Object.defineProperty(api.commands, 'getAll', {
+        configurable: true,
+        value: () => Promise.resolve([{ name: '_execute_action', shortcut: localStorage.getItem('__taberSmokeShortcut') || '' }]),
+      });
+      Object.defineProperty(api.commands, '__taberSidepanelSmoke', { configurable: true, value: true });
+    };
+    patchCommands(globalThis.chrome);
+    if (globalThis.browser !== globalThis.chrome) patchCommands(globalThis.browser);
     window.__taberSmokeActiveTab = { id: 52, windowId: 4, active: true, title: 'Selected tab', url: 'https://selected.example/page', favIconUrl: 'https://selected.example/favicon.ico' };
     Object.defineProperty(window, '__taberSmokeAllSitesGranted', {
       configurable: true,
@@ -1506,27 +1622,48 @@ function installSendMessageStubExpression() {
       };
     });
     let offset = 0;
+    window.__taberSmokeStartDelayMs = 0;
     window.__taberSmokeStartTask = (message) => new Promise((resolve, reject) => {
       window.__taberStartMessages.push(JSON.parse(JSON.stringify(message)));
-      const open = indexedDB.open('taber');
-      open.onerror = () => reject(open.error);
-      open.onsuccess = () => {
-        const db = open.result;
-        const sessionId = message.sessionId || 999;
-        const taskId = 'stub-' + crypto.randomUUID();
-        const now = Date.now() + (++offset) * 10;
-        const tx = db.transaction(['sessions', 'agentEvents'], 'readwrite');
-        tx.objectStore('sessions').get(sessionId).onsuccess = (event) => {
-          const session = event.target.result;
-          if (!session) { reject(new Error('session not found: ' + sessionId)); return; }
-          session.updatedAt = now;
-          tx.objectStore('sessions').put(session);
-          tx.objectStore('agentEvents').add({ sessionId, type: 'task.started', payload: { taskId, prompt: message.prompt, foregroundMode: message.foregroundMode }, createdAt: now });
-          tx.objectStore('agentEvents').add({ sessionId, type: 'task.completed', payload: { taskId, text: message.prompt + ' done.' }, createdAt: now + 1 });
+      const start = () => {
+        const open = indexedDB.open('taber');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const taskId = 'stub-' + crypto.randomUUID();
+          const now = Date.now() + (++offset) * 10;
+          const tx = db.transaction(['sessions', 'agentEvents'], 'readwrite');
+          const sessions = tx.objectStore('sessions');
+          const events = tx.objectStore('agentEvents');
+          let sessionId = Number(message.sessionId);
+          const appendTask = (session) => {
+            session.updatedAt = now;
+            sessions.put(session);
+            events.add({ sessionId, type: 'task.started', payload: { taskId, prompt: message.prompt, foregroundMode: message.foregroundMode }, createdAt: now });
+            events.add({ sessionId, type: 'task.completed', payload: { taskId, text: message.prompt + ' done.' }, createdAt: now + 1 });
+          };
+          if (Number.isInteger(sessionId) && sessionId > 0) {
+            sessions.get(sessionId).onsuccess = (event) => {
+              const session = event.target.result;
+              if (!session) { tx.abort(); return; }
+              appendTask(session);
+            };
+          } else {
+            const session = { title: String(message.prompt).slice(0, 80), pinned: false, createdAt: now, updatedAt: now };
+            const add = sessions.add(session);
+            add.onsuccess = () => {
+              sessionId = Number(add.result);
+              appendTask({ ...session, id: sessionId });
+            };
+          }
+          tx.oncomplete = () => { db.close(); resolve({ sessionId, taskId }); };
+          tx.onabort = () => { db.close(); reject(tx.error || new Error('session not found: ' + sessionId)); };
+          tx.onerror = () => reject(tx.error);
         };
-        tx.oncomplete = () => resolve({ sessionId, taskId });
-        tx.onerror = () => reject(tx.error);
       };
+      const delayMs = Number(window.__taberSmokeStartDelayMs) || 0;
+      if (delayMs > 0) setTimeout(start, delayMs);
+      else start();
     });
   })()`;
 }
