@@ -15,7 +15,7 @@ export type PageDocument = {
   frames?: PageDocumentFrame[];
 };
 
-export function extractDocumentFromPage(_input: { source: 'currentPage'; mode: 'article' | 'page' | 'selection'; tabId?: number; includeTables?: boolean }): PageDocument {
+export function extractDocumentFromPage(_input: { source: 'currentPage'; mode: 'article' | 'page' | 'selection'; includeTables?: boolean }): PageDocument {
   let shadowRootCount = 0;
   const html = cloneDocumentHtml(document);
   const visibleText = visibleTextFromDocument(document, 12_000).text;

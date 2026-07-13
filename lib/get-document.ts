@@ -12,7 +12,7 @@ export const MAX_TABLES = 20;
 export type GetDocumentCurrentPageMode = 'article' | 'page' | 'selection';
 
 export type GetDocumentInput =
-  | { source: 'currentPage'; mode: GetDocumentCurrentPageMode; tabId?: number; includeTables?: boolean }
+  | { source: 'currentPage'; mode: GetDocumentCurrentPageMode; includeTables?: boolean }
   | { source: 'url'; url: string; mode?: 'article' | 'page'; includeTables?: boolean }
   | { source: 'file'; name: string };
 
@@ -97,7 +97,7 @@ export function createGetDocumentController(options: {
     if (input.source === 'file') return extractWorkspaceFile(input, options.readFile);
     if (input.source === 'url') return extractUrl(input, options.fetchDocument);
 
-    const tabId = input.tabId ?? (await options.getCurrentTabId());
+    const tabId = await options.getCurrentTabId();
     let snapshot: PageDocument;
     try {
       snapshot = await options.executeInTab(tabId, input);
@@ -125,7 +125,6 @@ export function createGetDocumentController(options: {
 function readCurrentPageInput(value: Record<string, unknown>): CurrentPageDocumentInput {
   if (!('mode' in value)) throw new Error('getDocument.currentPage requires mode');
   const input: CurrentPageDocumentInput = { source: 'currentPage', mode: readMode(value.mode) };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
   if ('includeTables' in value) input.includeTables = readBoolean(value.includeTables, 'includeTables');
   return input;
 }
