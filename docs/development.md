@@ -28,7 +28,9 @@ pnpm run test:ci
 
 `pnpm run test:ci` runs Chrome/Edge builds, unit tests, database integration tests, and artifact verification. It does not run runtime browser smoke.
 
-`pnpm run test:ci:full` runs `test:ci` plus strict runtime smoke. It fails unless `TABER_CDP_ORIGIN`/`TABER_EXTENSION_ID` is set or a launchable browser exists.
+`pnpm run test:ci:runtime` defaults to the extension and browser-repl smoke checks, and may skip them when no runtime browser is available.
+
+`pnpm run test:ci:full` runs `test:ci` plus the required extension, browser-repl, and sidepanel smoke checks. It fails unless `TABER_CDP_ORIGIN`/`TABER_EXTENSION_ID` is set or a launchable browser exists.
 
 `pnpm run test:extension:dry` builds Chrome MV3 and checks extension artifacts. It does not prove runtime behavior.
 
