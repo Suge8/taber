@@ -25,6 +25,7 @@ type NavigateToolFailure = {
 };
 type NavigateToolResult = (NavigateResult & { availableSkills?: string[] }) | NavigateToolFailure;
 type EmitEvent = (type: string, payload: unknown) => Promise<void>;
+type WaitForInputPersistence = (toolCallId: string, abortSignal?: AbortSignal) => Promise<void>;
 type RunSandbox = typeof runBrowserReplInSandbox;
 type TargetChangeReason = 'openNew' | 'switchTab';
 type TargetChanged = { fromTabId?: number; toTabId: number; reason: TargetChangeReason; tab?: unknown };
@@ -42,6 +43,7 @@ type AgentToolOptions = {
   onTargetChanged?: (change: TargetChanged) => Promise<void>;
   onTargetUnavailable?: (error: string) => Promise<void>;
   onAuditPersistenceFailure?: (error: string) => Promise<void>;
+  waitForInputPersistence?: WaitForInputPersistence;
   runSandbox?: RunSandbox;
   browserJsEnabled?: boolean;
   profileAccess?: boolean;
@@ -107,7 +109,7 @@ export function createAgentTools(options: AgentToolOptions) {
   });
   // Skill freshness loop: after repeated tool failures, point the model back at skills it read this task.
   const staleSkillTracker: StaleSkillTracker = { readSkillPaths: [], consecutiveFailures: 0, hinted: false };
-  const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId, staleSkillTracker, options.onAuditPersistenceFailure);
+  const withRunLog = createRunLogger(options.sessionId, options.emitEvent, options.taskId, staleSkillTracker, options.onAuditPersistenceFailure, options.waitForInputPersistence);
   const serializeTargetOperation = createTargetOperationSerializer();
   const fsController = createFsController({ sessionId: options.sessionId, profileAccess: options.profileAccess });
   const tools = {
@@ -491,6 +493,35 @@ function createTargetOperationSerializer() {
   };
 }
 
+export function createToolInputAuditGate() {
+  const completed = new Set<string>();
+  const pending = new Map<string, { promise: Promise<void>; resolve: () => void }>();
+
+  const complete = (toolCallId: string) => {
+    completed.add(toolCallId);
+    pending.get(toolCallId)?.resolve();
+    pending.delete(toolCallId);
+  };
+  const wait = async (toolCallId: string, abortSignal?: AbortSignal) => {
+    if (completed.has(toolCallId)) return;
+    if (abortSignal?.aborted) throw new Error('Task aborted');
+    let gate = pending.get(toolCallId);
+    if (!gate) {
+      let resolve = () => {};
+      const promise = new Promise<void>((next) => { resolve = () => next(); });
+      gate = { promise, resolve };
+      pending.set(toolCallId, gate);
+    }
+    if (!abortSignal) return gate.promise;
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => { abortSignal.removeEventListener('abort', onAbort); reject(new Error('Task aborted')); };
+      abortSignal.addEventListener('abort', onAbort, { once: true });
+      gate.promise.then(() => { abortSignal.removeEventListener('abort', onAbort); resolve(); });
+    });
+  };
+  return { complete, wait };
+}
+
 class AuditPersistenceError extends Error {}
 
 function createRunLogger(
@@ -499,10 +530,13 @@ function createRunLogger(
   taskId: string | undefined,
   staleSkillTracker: StaleSkillTracker,
   onAuditPersistenceFailure?: (error: string) => Promise<void>,
+  waitForInputPersistence?: WaitForInputPersistence,
 ) {
   return function withRunLog<Input, Output>(toolName: string, run: (input: Input, abortSignal?: AbortSignal) => Promise<Output>) {
     return async (input: Input, options: ToolExecutionOptions) => {
       const toolCallId = options.toolCallId;
+      if (toolCallId) await waitForInputPersistence?.(toolCallId, options.abortSignal);
+      if (options.abortSignal?.aborted) throw new Error('Task aborted');
       const startedAt = nowMs();
       await emitEvent('tool.started', { taskId, toolCallId, toolName, input });
 

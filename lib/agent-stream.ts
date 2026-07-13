@@ -58,6 +58,15 @@ type StreamHealthState = {
 
 class AgentStreamHealthError extends Error {}
 
+export async function emitAgentEventFailClosed(emitEvent: () => Promise<void>, onPersistenceFailure: () => Promise<void>) {
+  try {
+    await emitEvent();
+  } catch (error) {
+    await onPersistenceFailure();
+    throw error;
+  }
+}
+
 export async function collectAgentResponseText(result: AgentStreamResult, events: AgentTextEvents, options?: AgentStreamOptions) {
   const idleTimeoutMs = options?.idleTimeoutMs ?? STREAM_IDLE_TIMEOUT_MS;
   const limits = {

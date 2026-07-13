@@ -5,7 +5,7 @@ import { browserPageScriptConsentKey } from '../../lib/browser-access';
 import { AGENT_HOST_IDLE_TIMEOUT_MS } from '../../lib/agent-host-controller';
 import { parseForegroundMode } from '../../lib/foreground-mode';
 import { parseProfileAccess } from '../../lib/personal-profile';
-import { collectAgentResponseText } from '../../lib/agent-stream';
+import { collectAgentResponseText, emitAgentEventFailClosed } from '../../lib/agent-stream';
 import {
   appendAgentEvent,
   createSession,
@@ -164,6 +164,10 @@ async function runAgentTask(task: {
   locale: AgentLocale;
 }) {
   try {
+    const emitTaskEvent = (type: string, payload: unknown) => emitAgentEventFailClosed(
+      () => emitAgentEvent(task.sessionId, type, payload),
+      () => failRunningTask(task.taskId, AUDIT_PERSISTENCE_FATAL_ERROR),
+    );
     const skillsDigest = await skillsDigestForTask(task.targetTabUrl, task.prompt);
     const instructions = [
       instructionsByLocale[task.locale],
@@ -171,7 +175,7 @@ async function runAgentTask(task: {
       ...(skillsDigest ? [skillsDigest] : []),
     ].join('\n\n');
     const runtime = await createConfiguredRuntime(task, instructions);
-    await emitAgentEvent(task.sessionId, 'runtime.configured', { taskId: task.taskId, ...runtime.diagnostics });
+    await emitTaskEvent('runtime.configured', { taskId: task.taskId, ...runtime.diagnostics });
     let events = (await readSessionSnapshot(task.sessionId)).agentEvents;
     const budget = { contextWindowTokens: runtime.modelRecord.contextWindowTokens, instructions, toolPromptText: runtime.toolPromptText };
     const compacted = await compactContext({
@@ -180,7 +184,7 @@ async function runAgentTask(task: {
       model: runtime.model,
       modelName: runtime.modelRecord.name,
       budget,
-      appendCompaction: (payload) => emitAgentEvent(task.sessionId, 'context.compacted', payload),
+      appendCompaction: (payload) => emitTaskEvent('context.compacted', payload),
     });
     if (compacted) events = (await readSessionSnapshot(task.sessionId)).agentEvents;
     const messages = deriveModelMessages(events, task.taskId);
@@ -191,10 +195,10 @@ async function runAgentTask(task: {
       timeout: { stepMs: AGENT_STEP_TIMEOUT_MS, totalMs: AGENT_TOTAL_TIMEOUT_MS },
     });
     const messageId = crypto.randomUUID();
-    const deltas = createDeltaCoalescer((type, payload) => emitAgentEvent(task.sessionId, type, payload));
+    const deltas = createDeltaCoalescer(emitTaskEvent);
     const emitFlushed = async (type: string, payload: unknown) => {
       await deltas.flush();
-      await emitAgentEvent(task.sessionId, type, payload);
+      await emitTaskEvent(type, payload);
     };
     const text = await collectAgentResponseText(result, {
       createMessage: () => emitFlushed('message.created', { taskId: task.taskId, messageId, role: 'assistant', text: '' }),
@@ -204,20 +208,25 @@ async function runAgentTask(task: {
       completeReasoning: ({ reasoningId }) => emitFlushed('reasoning.completed', { taskId: task.taskId, reasoningId }),
       startToolInput: ({ toolCallId, toolName, title }) => emitFlushed('tool.input.started', { taskId: task.taskId, toolCallId, toolName, title }),
       appendToolInput: ({ toolCallId, delta }) => deltas.append('tool.input.appended', toolCallId, { taskId: task.taskId, toolCallId }, delta),
-      completeToolInput: ({ toolCallId, toolName, input, title }) => emitFlushed('tool.input.completed', { taskId: task.taskId, toolCallId, toolName, input, title }),
+      completeToolInput: async ({ toolCallId, toolName, input, title }) => {
+        await emitFlushed('tool.input.completed', { taskId: task.taskId, toolCallId, toolName, input, title });
+        runtime.toolInputAudit.complete(toolCallId);
+      },
       failToolCall: ({ toolCallId, toolName, error }) => emitFlushed('tool.failed', { taskId: task.taskId, toolCallId, toolName, error }),
     }, {
       abortSignal: task.abortController.signal,
       onHealthFailure: (error) => { void failRunningTask(task.taskId, error); },
     }).finally(() => deltas.flush());
     if (task.abortController.signal.aborted) throw new Error('Task aborted');
-    await emitAgentEvent(task.sessionId, 'task.completed', { taskId: task.taskId, text });
+    await emitTaskEvent('task.completed', { taskId: task.taskId, text });
   } catch (error) {
+    const wasAborted = task.abortController.signal.aborted;
+    task.abortController.abort();
     const fatalError = runningTask?.taskId === task.taskId ? runningTask.fatalError : undefined;
     try {
       if (fatalError) {
         await emitAgentEvent(task.sessionId, 'task.failed', { taskId: task.taskId, error: fatalError });
-      } else if (task.abortController.signal.aborted) {
+      } else if (wasAborted) {
         await emitAgentEvent(task.sessionId, 'task.cancelled', { taskId: task.taskId });
       } else {
         await emitAgentEvent(task.sessionId, 'task.failed', { taskId: task.taskId, error: stringifyError(error) });
@@ -261,16 +270,18 @@ async function createConfiguredRuntime(
   ]);
   if (!providerRecord) throw new Error(`Model provider not found: ${modelRecord.providerId}`);
 
-  const [{ AGENT_TOOL_SCHEMA_VERSION, createAgentToolPromptEstimateText, createAgentTools }, { model, providerOptions }, browserJsEnabled] = await Promise.all([
+  const [{ AGENT_TOOL_SCHEMA_VERSION, createAgentToolPromptEstimateText, createAgentTools, createToolInputAuditGate }, { model, providerOptions }, browserJsEnabled] = await Promise.all([
     import('../../lib/agent-tools'),
     createLanguageModelRuntime(providerRecord, modelRecord, reasoningEffort),
     readBrowserJsEnabled(),
   ]);
   const toolPromptText = createAgentToolPromptEstimateText({ browserJsEnabled });
+  const toolInputAudit = createToolInputAuditGate();
   return {
     modelRecord,
     model,
     toolPromptText,
+    toolInputAudit,
     diagnostics: {
       providerKind: providerRecord.kind,
       providerName: providerRecord.name,
@@ -297,6 +308,7 @@ async function createConfiguredRuntime(
         onTargetChanged: (change) => updateRunningTarget(sessionId, taskId, change),
         onTargetUnavailable: (error) => failRunningTask(taskId, error),
         onAuditPersistenceFailure: () => failRunningTask(taskId, AUDIT_PERSISTENCE_FATAL_ERROR),
+        waitForInputPersistence: toolInputAudit.wait,
         browserJsEnabled,
       }),
     }),

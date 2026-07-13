@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
-import { collectAgentResponseText, type AgentStreamPart } from '../lib/agent-stream.ts';
+import { ToolLoopAgent, simulateReadableStream, stepCountIs } from 'ai';
+import { MockLanguageModelV3 } from 'ai/test';
+import { collectAgentResponseText, emitAgentEventFailClosed, type AgentStreamPart } from '../lib/agent-stream.ts';
+import { createAgentTools, createToolInputAuditGate } from '../lib/agent-tools.ts';
 import { MAX_FS_WRITE_CHARS } from '../lib/fs-tool.ts';
 
 await testTextDeltasAreEmitted();
 await testReasoningAndToolProgressAreEmitted();
 await testInvalidToolCallEmitsFailure();
+await testToolInputPersistenceFailureStopsScheduledTool();
 await testFallbackTextIsEmitted();
 await testFinishReasonErrorRejects();
 await testUnfinishedToolLoopRejects();
@@ -78,6 +82,69 @@ async function testInvalidToolCallEmitsFailure() {
     'tool-fail:call-2:extractImage:source must be viewport, imageElement, canvas, or backgroundImage',
     'tool-input-complete:call-3:navigate:{"action":"currentTab"}',
   ]);
+}
+
+async function testToolInputPersistenceFailureStopsScheduledTool() {
+  const abortController = new AbortController();
+  const inputAudit = createToolInputAuditGate();
+  let pageActions = 0;
+  const tools = createAgentTools({
+    sessionId: 1,
+    foregroundMode: false,
+    targetTabId: 7,
+    async sendMessage() {
+      pageActions += 1;
+      throw new Error('scheduled page action must not run');
+    },
+    async emitEvent() {},
+    waitForInputPersistence: inputAudit.wait,
+    browserJsEnabled: false,
+  });
+  const usage = {
+    inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 1, text: 1, reasoning: 0 },
+  };
+  const model = new MockLanguageModelV3({
+    doStream: {
+      stream: simulateReadableStream({
+        chunks: [
+          { type: 'stream-start', warnings: [] },
+          { type: 'tool-input-start', id: 'call-audit', toolName: 'navigate' },
+          { type: 'tool-input-delta', id: 'call-audit', delta: '{"action":"currentTab"}' },
+          { type: 'tool-input-end', id: 'call-audit' },
+          { type: 'tool-call', toolCallId: 'call-audit', toolName: 'navigate', input: '{"action":"currentTab"}' },
+          { type: 'finish', finishReason: { unified: 'tool-calls', raw: undefined }, usage },
+        ],
+        initialDelayInMs: null,
+        chunkDelayInMs: null,
+      }),
+    },
+  });
+  const result = await new ToolLoopAgent({ model, tools, stopWhen: stepCountIs(2) }).stream({
+    prompt: 'test audit failure',
+    abortSignal: abortController.signal,
+  });
+  let fatalCallbacks = 0;
+
+  await assert.rejects(
+    () => collectAgentResponseText(result, {
+      createMessage: async () => {},
+      appendText: async () => {},
+      startToolInput: async () => {},
+      appendToolInput: async () => {},
+      completeToolInput: () => emitAgentEventFailClosed(
+        async () => { throw new Error('synthetic tool.input.completed persistence failure'); },
+        async () => { fatalCallbacks += 1; abortController.abort(); },
+      ),
+    }, { abortSignal: abortController.signal }),
+    /synthetic tool\.input\.completed persistence failure/,
+  );
+  await Promise.resolve(result.text).catch(() => undefined);
+
+  assert.equal(fatalCallbacks, 1);
+  assert.equal(abortController.signal.aborted, true);
+  assert.equal(pageActions, 0, 'an input whose audit event failed must not reach the page');
+  assert.equal(model.doStreamCalls.length, 1, 'audit failure must stop the model loop');
 }
 
 async function testFallbackTextIsEmitted() {
