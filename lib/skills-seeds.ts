@@ -5,7 +5,7 @@
 import { database, type SkillCategory } from './db.ts';
 import { listSkills, saveSkill } from './skills.ts';
 
-export const BUILTIN_SKILLS_VERSION = 6;
+export const BUILTIN_SKILLS_VERSION = 7;
 export const builtinSkillsVersionKey = 'builtinSkillsVersion';
 
 type SeedSkill = {
@@ -237,8 +237,10 @@ export const builtinSkillSeeds: SeedSkill[] = [
     descriptionZh: '抖音搜索入口与反爬限制',
     category: 'video',
     content: [
+      '- Hot page: https://www.douyin.com/hot',
       '- Search: https://www.douyin.com/search/<url-encoded query>',
-      '- Video pages (/video/<id>) are heavy SPAs; read with browserRepl readVisibleText on the live page.',
+      '- Dynamic lists and video pages are heavy SPAs: inspect the live page with browser snapshot first; use browserRepl readVisibleText only when substantial non-interactive text is missing.',
+      '- Never infer what an unlabeled card number means (views, likes, or heat). Report it verbatim unless live-page semantics identify the metric.',
       'Pitfalls: strong anti-bot — anonymous visits frequently hit slider captchas or login prompts; never try to solve captchas, surface them to the user. Direct fetch returns empty shells.',
     ].join('\n'),
   },
