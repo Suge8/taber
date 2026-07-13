@@ -7,8 +7,8 @@ import { CODEX_CLIENT_VERSION, CODEX_ORIGINATOR } from '../lib/codex-auth.ts';
 // fields; options must omit them unless the model supports reasoning.
 assert.deepEqual(codexProviderOptions('default', []), { openai: { store: false, parallelToolCalls: true } });
 assert.deepEqual(codexProviderOptions('high', []), { openai: { store: false, parallelToolCalls: true } });
-assert.deepEqual(codexProviderOptions('high', ['high']), { openai: { store: false, parallelToolCalls: true, reasoningSummary: 'detailed', reasoningEffort: 'high' } });
-assert.deepEqual(codexProviderOptions('default', ['high']), { openai: { store: false, parallelToolCalls: true, reasoningSummary: 'detailed' } });
+assert.deepEqual(codexProviderOptions('high', ['high']), { openai: { store: false, parallelToolCalls: true, forceReasoning: true, reasoningSummary: 'detailed', reasoningEffort: 'high' } });
+assert.deepEqual(codexProviderOptions('default', ['high']), { openai: { store: false, parallelToolCalls: true, forceReasoning: true, reasoningSummary: 'detailed' } });
 import { connectOpenAICodex } from '../lib/codex-provider.ts';
 import { database, initializeDatabase } from '../lib/db.ts';
 import { readSelectedConfiguredModel, signOutOpenAICodex } from '../lib/provider-config-flow.ts';

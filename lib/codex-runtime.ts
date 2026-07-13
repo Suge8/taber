@@ -40,7 +40,7 @@ export function codexProviderOptions(reasoningEffort: ReasoningEffort, supported
       parallelToolCalls: true,
       // 'detailed' is the fullest reasoning view OpenAI exposes (raw chain of
       // thought is never returned); probed 200 across gpt-5.5/5.6 sol/terra/luna.
-      ...(supportsReasoning ? { reasoningSummary: 'detailed' } : {}),
+      ...(supportsReasoning ? { forceReasoning: true, reasoningSummary: 'detailed' } : {}),
       ...(reasoningEffort === 'default' || !supportsReasoning ? {} : { reasoningEffort }),
     },
   };

@@ -31,6 +31,7 @@ export function xaiProviderOptions(reasoningEffort: ReasoningEffort) {
     openai: {
       store: false,
       parallelToolCalls: true,
+      forceReasoning: true,
       ...(reasoningEffort === 'default' ? {} : { reasoningEffort }),
     },
   };

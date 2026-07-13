@@ -121,7 +121,7 @@ async function testOpenAIApiRuntimeUsesResponsesAndReasoningMetadata() {
   let capturedHeaders = new Headers();
   let capturedBody: Record<string, unknown> = {};
   const model = createOpenAIApiLanguageModel({
-    modelId: 'gpt-5.4',
+    modelId: 'future-reasoning-model',
     providerName: 'OpenAI',
     baseURL: 'https://api.openai.com/v1',
     apiKey: 'sk-test',
@@ -129,17 +129,17 @@ async function testOpenAIApiRuntimeUsesResponsesAndReasoningMetadata() {
       capturedUrl = String(input);
       capturedHeaders = new Headers(init?.headers);
       capturedBody = JSON.parse(String(init?.body));
-      return jsonResponse({ id: 'response-1', model: 'gpt-5.4', output: [{ type: 'message', role: 'assistant', id: 'msg-1', content: [{ type: 'output_text', text: 'ok', annotations: [] }] }] });
+      return jsonResponse({ id: 'response-1', model: 'future-reasoning-model', output: [{ type: 'message', role: 'assistant', id: 'msg-1', content: [{ type: 'output_text', text: 'ok', annotations: [] }] }] });
     },
   }) as any;
 
   await model.doGenerate({
     prompt: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }],
-    providerOptions: openAIProviderOptions('xhigh', ['none', 'xhigh'], 'gpt-5.4'),
+    providerOptions: openAIProviderOptions('xhigh', ['none', 'xhigh'], 'future-reasoning-model'),
   });
   assert.equal(capturedUrl, 'https://api.openai.com/v1/responses');
   assert.equal(capturedHeaders.get('authorization'), 'Bearer sk-test');
-  assert.equal(capturedBody.model, 'gpt-5.4');
+  assert.equal(capturedBody.model, 'future-reasoning-model');
   assert.equal(capturedBody.store, false);
   assert.equal(capturedBody.parallel_tool_calls, true);
   assert.deepEqual(capturedBody.reasoning, { effort: 'xhigh', summary: 'detailed' });
