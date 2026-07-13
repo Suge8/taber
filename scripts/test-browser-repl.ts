@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import 'fake-indexeddb/auto';
-import { browserReplFallbackFor, createBrowserReplController, DEFAULT_BROWSER_REPL_TIMEOUT_MS, MAX_BROWSER_REPL_TIMEOUT_MS, parseBrowserReplInput, type BrowserReplPageCommand } from '../lib/browser-repl.ts';
+import { browserReplFallbackFor, createBrowserReplController, DEFAULT_BROWSER_REPL_TIMEOUT_MS, parseBrowserReplInput, type BrowserReplPageCommand } from '../lib/browser-repl.ts';
 import { cloneBoundaryError, normalizeBrowserJsCode } from '../lib/browser-repl-code.ts';
+import { browserReplExecutionSources } from '../lib/browser-repl-evaluation.ts';
 import { canUseCdpFallback, executeBrowserReplCdpFallback } from '../lib/browser-repl-cdp.ts';
 import { chromeApiRequestType } from '../lib/chrome-api-broker.ts';
 import { createAgentTools } from '../lib/agent-tools.ts';
@@ -1168,9 +1169,57 @@ async function testCspSafeHelpersDoNotRequireBrowserJsConsent() {
 }
 
 function testParsesInput() {
-  assert.deepEqual(parseBrowserReplInput({ code: 'return 1', tabId: 7, timeoutMs: 1 }), { code: 'return 1', tabId: 7, timeoutMs: 1 });
+  assert.deepEqual(parseBrowserReplInput({ code: 'return 1', tabId: 7, timeoutMs: 120_000 }), { code: 'return 1' });
   assert.throws(() => parseBrowserReplInput({ code: '' }), /browserRepl.code is required/);
-  assert.throws(() => parseBrowserReplInput({ code: 'return 1', timeoutMs: MAX_BROWSER_REPL_TIMEOUT_MS + 1 }), /timeoutMs must be <= 120000/);
+}
+
+async function testBrowserReplEvaluatesExpressionsAndBodies() {
+  const helper = async () => 'visible text';
+  assert.equal(await evaluateBrowserReplCode('readVisibleText()', { readVisibleText: helper }), 'visible text');
+  assert.equal(await evaluateBrowserReplCode('await readVisibleText();', { readVisibleText: helper }), 'visible text');
+  assert.equal(await evaluateBrowserReplCode('const text = await readVisibleText(); return text;', { readVisibleText: helper }), 'visible text');
+}
+
+async function testBrowserReplNeverReturnsSilentUndefined() {
+  const evidence = { title: 'Live page', text: 'Visible content' };
+  const controller = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand() { return evidence; },
+    async runSandbox(run) {
+      await run.helpers.readVisibleText();
+      return undefined;
+    },
+  });
+  assert.deepEqual(await controller.run({ code: 'await readVisibleText();' }), { value: evidence });
+
+  const emptyController = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand() { throw new Error('should not run'); },
+    async runSandbox() { return undefined; },
+  });
+  assert.deepEqual(await emptyController.run({ code: 'const value = 1;' }), {
+    ok: false,
+    code: 'NO_EVIDENCE',
+    message: 'browserRepl completed without returning evidence.',
+    retryHint: 'Do not repeat possible side effects. Inspect fresh state with browser.snapshot, or return the result from multi-statement code.',
+  });
+}
+
+async function evaluateBrowserReplCode(code: string, helpers: Record<string, (...args: unknown[]) => unknown>) {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  let syntaxError: unknown;
+  for (const source of browserReplExecutionSources(code)) {
+    let run: (...args: unknown[]) => Promise<unknown>;
+    try {
+      run = new AsyncFunction(...Object.keys(helpers), source);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      syntaxError = error;
+      continue;
+    }
+    return run(...Object.values(helpers));
+  }
+  throw syntaxError;
 }
 
 function testRoutesFallbacks() {
@@ -1232,6 +1281,7 @@ async function testRunsSandboxWithSelectorBatchAndFillFormHelpers() {
   });
 
   const result = await controller.run({ code: 'return 1' });
+  assert.ok('value' in result);
   assert.deepEqual(result.value, {
     selectorFill: { filled: true, target: '#name' },
     batchResult: { ok: true, actions: [{ action: 'click', index: 1, target: ref }, { action: 'fill', selector: '#name', value: 'beta', target: '#name' }] },
@@ -1318,7 +1368,7 @@ async function testRunsSandboxWithNavigateHelper() {
       const parsed = parseNavigateInput(input);
       navigations.push(parsed);
       currentTabId = 4;
-      return { action: parsed.action, tab: { id: 4, url: parsed.url } };
+      return { action: parsed.action, tab: { id: 4, ...(parsed.action === 'open' ? { url: parsed.url } : {}) } };
     },
     async runSandbox(run) {
       assert(Object.keys(run.helpers).includes('navigate'));
@@ -1786,12 +1836,173 @@ async function testHelperTimeoutUsesScheduler() {
   await assert.rejects(pending, /observe timed out after 5000ms/);
 }
 
+async function testRunTimeoutCancelsEveryLongPageHelper() {
+  const cases: Array<{ name: string; run(helper: Record<string, (...args: unknown[]) => Promise<unknown>>): Promise<unknown> }> = [
+    { name: 'waitFor', run: (helper) => helper.waitFor({ text: 'never', timeoutMs: 120_000 }) },
+    { name: 'batch', run: (helper) => helper.batch([], { timeoutMs: 120_000 }) },
+    { name: 'fillForm', run: (helper) => helper.fillForm({ fields: {}, timeoutMs: 120_000 }) },
+    { name: 'pickUserElement', run: (helper) => helper.pickUserElement({ message: 'Pick', timeoutMs: 120_000 }) },
+  ];
+
+  for (const scenario of cases) {
+    const scheduler = createScheduler();
+    let command: BrowserReplPageCommand | undefined;
+    let commandAborted = false;
+    let sideEffect = false;
+    let complete = () => undefined;
+    const controller = createBrowserReplController({
+      async getCurrentTabId() { return 1; },
+      async executePageCommand(_tabId, nextCommand, signal) {
+        command = nextCommand;
+        return new Promise((resolve, reject) => {
+          complete = () => { if (!signal?.aborted) { sideEffect = true; resolve({ completed: true }); } };
+          signal?.addEventListener('abort', () => { commandAborted = true; reject(new Error('Task aborted')); }, { once: true });
+        });
+      },
+      async runSandbox(run) { return scenario.run(run.helpers); },
+      scheduler,
+    });
+
+    const pending = controller.run({ code: `return ${scenario.name}()` });
+    for (let index = 0; index < 5 && !command; index += 1) await Promise.resolve();
+    assert.equal(command?.helper, scenario.name);
+    assert.equal(command?.timeoutMs, DEFAULT_BROWSER_REPL_TIMEOUT_MS, `${scenario.name} must be capped by the remaining run budget`);
+    scheduler.fire();
+    await assert.rejects(pending, new RegExp(`browserRepl timed out after ${DEFAULT_BROWSER_REPL_TIMEOUT_MS}ms`));
+    assert.equal(commandAborted, true, `${scenario.name} must receive abort when the REPL run times out`);
+    complete();
+    assert.equal(sideEffect, false, `${scenario.name} must not continue side effects after timeout`);
+  }
+}
+
+async function testRunTimeoutPreservesConcurrentHelperError() {
+  const scheduler = createScheduler();
+  const helperError = new Error('page detached during wait');
+  let sandboxStarted = false;
+  let failSandbox: () => void = () => undefined;
+  const controller = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand() { throw new Error('page command must not start'); },
+    async runSandbox() {
+      sandboxStarted = true;
+      return new Promise((_resolve, reject) => { failSandbox = () => reject(helperError); });
+    },
+    scheduler,
+  });
+
+  const pending = controller.run({ code: 'return waitFor({ text: "never" })' });
+  for (let index = 0; index < 5 && !sandboxStarted; index += 1) await Promise.resolve();
+  failSandbox();
+  scheduler.fire();
+  await assert.rejects(pending, (error: Error) => error.message === 'browserRepl timed out after 30000ms' && error.cause === helperError);
+}
+
+async function testExhaustedRunBudgetFailsBeforePageCommand() {
+  const scheduler = createScheduler();
+  let pageCommandStarted = false;
+  const controller = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand() { pageCommandStarted = true; return {}; },
+    async runSandbox(run) {
+      scheduler.advance(DEFAULT_BROWSER_REPL_TIMEOUT_MS);
+      return run.helpers.observe();
+    },
+    scheduler,
+  });
+
+  await assert.rejects(controller.run({ code: 'return observe()' }), /browserRepl timed out after 30000ms/);
+  assert.equal(pageCommandStarted, false);
+}
+
+async function testRunTimeoutSendsPageCancellation() {
+  const scheduler = createScheduler();
+  const messages: Record<string, unknown>[] = [];
+  const executor = createBrowserReplPageExecutor({
+    async sendMessage(message) {
+      if (!isRecord(message)) throw new Error('Expected message object');
+      messages.push(message);
+      if (message.type === 'taber.browserRepl.scriptingCommand') return new Promise(() => undefined);
+      if (message.type === 'taber.browserRepl.cancelPageCommand') return true;
+      throw new Error(`Unexpected cancellation message: ${JSON.stringify(message)}`);
+    },
+    readTargetTabId: () => 1,
+    async errorFromResponse(message) { return new Error(message); },
+  });
+  const controller = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    executePageCommand: (tabId, command, signal) => executor.executePageCommand(tabId, command, signal),
+    async runSandbox(run) { return run.helpers.waitFor({ text: 'never', timeoutMs: 120_000 }); },
+    scheduler,
+  });
+
+  const pending = controller.run({ code: 'return waitFor({ text: "never" })' });
+  for (let index = 0; index < 5 && messages.length === 0; index += 1) await Promise.resolve();
+  const started = messages.find((message) => message.type === 'taber.browserRepl.scriptingCommand');
+  assert(started && isRecord(started.command));
+  scheduler.fire();
+  await assert.rejects(pending, /browserRepl timed out after 30000ms/);
+  await Promise.resolve();
+  const cancelled = messages.find((message) => message.type === 'taber.browserRepl.cancelPageCommand');
+  assert(cancelled);
+  assert.equal(cancelled.cancelKey, started.command.cancelKey);
+  assert.equal(cancelled.tabId, 1);
+  assert.equal(cancelled.targetTabId, 1);
+}
+
+async function testTaskAbortCancelsPageHelper() {
+  const taskAbortController = new AbortController();
+  let commandStarted = false;
+  let commandAborted = false;
+  const controller = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand(_tabId, _command, signal) {
+      commandStarted = true;
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => { commandAborted = true; reject(new Error('Task aborted')); }, { once: true });
+      });
+    },
+    async runSandbox(run) { return run.helpers.waitFor({ text: 'never' }); },
+  });
+
+  const pending = controller.run({ code: 'return waitFor({ text: "never" })' }, taskAbortController.signal);
+  for (let index = 0; index < 5 && !commandStarted; index += 1) await Promise.resolve();
+  taskAbortController.abort();
+  await assert.rejects(pending, /Task aborted/);
+  assert.equal(commandAborted, true);
+}
+
+async function testRunCleanupCancelsUnawaitedHelper() {
+  let commandAborted = false;
+  let complete = () => undefined;
+  let sideEffect = false;
+  const controller = createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand(_tabId, _command, signal) {
+      return new Promise((resolve, reject) => {
+        complete = () => { if (!signal?.aborted) { sideEffect = true; resolve({ completed: true }); } };
+        signal?.addEventListener('abort', () => { commandAborted = true; reject(new Error('Task aborted')); }, { once: true });
+      });
+    },
+    async runSandbox(run) {
+      void run.helpers.waitFor({ text: 'never', timeoutMs: 120_000 }).catch(() => undefined);
+      await Promise.resolve();
+      return 'done';
+    },
+  });
+
+  assert.deepEqual(await controller.run({ code: 'waitFor(); return "done"' }), { value: 'done' });
+  assert.equal(commandAborted, true);
+  complete();
+  assert.equal(sideEffect, false);
+}
+
 async function runBrowserReplTool(input: unknown, options: { runSandbox(run: Parameters<Parameters<typeof createBrowserReplController>[0]['runSandbox']>[0]): Promise<unknown>; sendMessage(message: unknown): Promise<unknown> }) {
   await initializeDatabase();
   if (!(await database.sessions.get(1))) await createSession({ now: 1 });
   const tools = createAgentTools({
     sessionId: 1,
     foregroundMode: false,
+    targetTabId: 5,
     async emitEvent() {},
     sendMessage: options.sendMessage,
     runSandbox: options.runSandbox,
@@ -2210,12 +2421,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function createScheduler() {
-  let callback: () => void = () => undefined;
+  let nowMs = 0;
+  let nextId = 1;
+  const timers = new Map<number, { callback(): void; dueMs: number }>();
   return {
     delayMs: 0,
-    setTimeout(nextCallback: () => void, delayMs: number) { callback = nextCallback; this.delayMs = delayMs; return 1; },
-    clearTimeout() { callback = () => undefined; },
-    fire() { callback(); },
+    now() { return nowMs; },
+    setTimeout(callback: () => void, delayMs: number) {
+      const id = nextId++;
+      timers.set(id, { callback, dueMs: nowMs + delayMs });
+      this.delayMs = delayMs;
+      return id;
+    },
+    clearTimeout(id: unknown) { timers.delete(Number(id)); },
+    advance(delayMs: number) { nowMs += delayMs; },
+    fire() {
+      const next = [...timers].sort((left, right) => left[1].dueMs - right[1].dueMs || left[0] - right[0])[0];
+      if (!next) return;
+      timers.delete(next[0]);
+      nowMs = next[1].dueMs;
+      next[1].callback();
+    },
   };
 }
 
@@ -2248,6 +2474,8 @@ await testBrowserJsSharesPageGlobalsButNotExtensionLexicals();
 await testBrowserJsCanBeDisabledForAgentConsent();
 await testCspSafeHelpersDoNotRequireBrowserJsConsent();
 testParsesInput();
+await testBrowserReplEvaluatesExpressionsAndBodies();
+await testBrowserReplNeverReturnsSilentUndefined();
 testRoutesFallbacks();
 await testRunsSandboxWithHelpersAndElementRefs();
 await testRunsSandboxWithSelectorBatchAndFillFormHelpers();
@@ -2266,6 +2494,12 @@ await testFrameRouterConcurrentSnapshotDoesNotStaleRefOrSemanticAction();
 await testStructuredBrowserNativeFallbackBoundary();
 await testCdpFallbackErrorContracts();
 await testHelperTimeoutUsesScheduler();
+await testRunTimeoutCancelsEveryLongPageHelper();
+await testRunTimeoutPreservesConcurrentHelperError();
+await testExhaustedRunBudgetFailsBeforePageCommand();
+await testRunTimeoutSendsPageCancellation();
+await testTaskAbortCancelsPageHelper();
+await testRunCleanupCancelsUnawaitedHelper();
 database.close();
 
 console.info('browser repl tests passed');
