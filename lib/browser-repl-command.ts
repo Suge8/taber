@@ -4,12 +4,16 @@ export const MAX_BROWSER_REPL_TIMEOUT_MS = 120_000;
 
 export type BrowserReplInput = {
   code: string;
-  tabId?: number;
-  timeoutMs?: number;
 };
 
 export type BrowserJsConsoleEntry = { level: 'log' | 'info' | 'warn' | 'error'; text: string };
-export type BrowserReplResult = { value: unknown; browserjs?: { console: BrowserJsConsoleEntry[] } };
+export type BrowserReplSuccess = { value: unknown; browserjs?: { console: BrowserJsConsoleEntry[] } };
+export type BrowserReplResult = BrowserReplSuccess | {
+  ok: false;
+  code: 'NO_EVIDENCE';
+  message: string;
+  retryHint: string;
+};
 
 export type BrowserReplElementRef = {
   stableId: string;
@@ -77,8 +81,7 @@ export function createBrowserReplInputJsonSchema(_options: { browserJsEnabled?: 
     additionalProperties: false,
     required: ['code'],
     properties: {
-      code: { type: 'string', description: 'JavaScript REPL code for the controlled target tab. Use the structured browser tool first for text/role/label/ref click, fill, press, and snapshot; use browserRepl only as an advanced fallback. Page-reading fallback helpers: readVisibleText(), readLinksAndButtons(), listInteractiveElements(), or queryText("text") report open shadow roots and frames[]; same-origin frames are readable summaries, cross-origin frames are metadata only. Prefer one observe()/query(native CSS) snapshot only when action indexes are needed, one batch/fillForm action, and one verification. waitFor("text") is shorthand for waitFor({ text: "text" }); use waitFor/action auto-wait for page changes, not sleep/setTimeout polling. Obvious CSS like "body", "#id", or ".class" is shorthand for { selector }. observe("text") is invalid and does not search text. Native CSS does not support Playwright selectors like :has-text(); use browser text/role locators first, queryText("text"), waitFor({ text }) for waits, or observe/query then a same-call index for actions. click/fill/press indexes are valid only after observe/query in the same browserRepl call; prefer selectors for durable actions. For forms, use fillForm dryRun/execution, inspect missing/ambiguous, then pickElement/pickUserElement if needed. Use navigate(input) instead of direct location/history/window.open navigation. Return concise serializable evidence only; no DOM/functions/Window/Event/cycles/dataUrl.' },
-      timeoutMs: { type: 'integer', minimum: 1, maximum: MAX_BROWSER_REPL_TIMEOUT_MS },
+      code: { type: 'string', description: 'JavaScript REPL code for the controlled target tab. Single expressions return automatically; multi-statement code must explicitly return evidence. Use the structured browser tool first for text/role/label/ref click, fill, press, and snapshot; use browserRepl only as an advanced fallback. Page-reading fallback helpers: readVisibleText(), readLinksAndButtons(), listInteractiveElements(), or queryText("text") report open shadow roots and frames[]; same-origin frames are readable summaries, cross-origin frames are metadata only. Prefer one observe()/query(native CSS) snapshot only when action indexes are needed, one batch/fillForm action, and one verification. waitFor("text") is shorthand for waitFor({ text: "text" }); use waitFor/action auto-wait for page changes, not sleep/setTimeout polling. Obvious CSS like "body", "#id", or ".class" is shorthand for { selector }. observe("text") is invalid and does not search text. Native CSS does not support Playwright selectors like :has-text(); use browser text/role locators first, queryText("text"), waitFor({ text }) for waits, or observe/query then a same-call index for actions. click/fill/press indexes are valid only after observe/query in the same browserRepl call; prefer selectors for durable actions. For forms, use fillForm dryRun/execution, inspect missing/ambiguous, then pickElement/pickUserElement if needed. Use navigate(input) instead of direct location/history/window.open navigation. Return concise serializable evidence only; no DOM/functions/Window/Event/cycles/dataUrl.' },
     },
   } as const;
 }
@@ -88,13 +91,7 @@ export function parseBrowserReplInput(value: unknown): BrowserReplInput {
   const code = readString(value.code, 'code');
   if (code.trim() === '') throw new Error('browserRepl.code is required');
 
-  const input: BrowserReplInput = { code };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  if ('timeoutMs' in value) input.timeoutMs = readPositiveInteger(value.timeoutMs, 'timeoutMs');
-  if (input.timeoutMs && input.timeoutMs > MAX_BROWSER_REPL_TIMEOUT_MS) {
-    throw new Error(`timeoutMs must be <= ${MAX_BROWSER_REPL_TIMEOUT_MS}`);
-  }
-  return input;
+  return { code };
 }
 
 export function browserReplFallbackFor(command: BrowserReplPageCommand): BrowserReplFallback {

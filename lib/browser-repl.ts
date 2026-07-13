@@ -40,6 +40,7 @@ export {
   type BrowserReplPageCommand,
   type BrowserReplPageHelperName,
   type BrowserReplResult,
+  type BrowserReplSuccess,
   type BrowserReplSandboxRun,
 } from './browser-repl-command.ts';
 
@@ -52,8 +53,16 @@ const MAX_BROWSERJS_CONSOLE_ENTRIES = 20;
 type BrowserJsPageResult = { type: typeof browserJsPageResultType; value: unknown; console: BrowserJsConsoleEntry[] };
 
 type Scheduler = {
+  now?(): number;
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(timeoutId: unknown): void;
+};
+
+type RunBudget = {
+  signal: AbortSignal;
+  limit(requestedMs: number): number;
+  normalizeError(error: unknown): Error;
+  close(): void;
 };
 
 export function createBrowserReplController(options: {
@@ -71,24 +80,32 @@ export function createBrowserReplController(options: {
 
   async function run(value: unknown, abortSignal?: AbortSignal): Promise<BrowserReplResult> {
     const input = parseBrowserReplInput(value);
-    let pageTabId = input.tabId ?? (await options.getCurrentTabId());
+    const budget = createRunBudget(abortSignal, scheduler);
+    return runWithinBudget(input, budget).catch((error) => { throw budget.normalizeError(error); }).finally(() => budget.close());
+  }
+
+  async function runWithinBudget(input: BrowserReplInput, budget: RunBudget): Promise<BrowserReplResult> {
+    if (budget.signal.aborted) throw new Error('Task aborted');
+    let pageTabId = await options.getCurrentTabId();
     const refs = new Map<number, BrowserReplElementRef>();
     let nextRefIndex = 1;
+    let lastEvidence: unknown;
     const browserJsConsole: BrowserJsConsoleEntry[] = [];
 
-    const callPage = (command: BrowserReplPageCommand, pageTimeoutMs: number) => {
+    const callPage = (command: BrowserReplPageCommand, requestedTimeoutMs: number) => {
+      const pageTimeoutMs = budget.limit(requestedTimeoutMs);
       const pageCommand = { ...command, cancelKey: crypto.randomUUID(), timeoutMs: pageTimeoutMs };
       const pageAbortController = new AbortController();
       const relayAbort = () => pageAbortController.abort();
-      if (abortSignal?.aborted) relayAbort();
-      else abortSignal?.addEventListener('abort', relayAbort, { once: true });
+      if (budget.signal.aborted) relayAbort();
+      else budget.signal.addEventListener('abort', relayAbort, { once: true });
       return withTimeout(
         () => options.executePageCommand(pageTabId, pageCommand, pageAbortController.signal),
         pageTimeoutMs,
         `${command.helper} timed out`,
         scheduler,
         pageAbortController,
-      ).finally(() => abortSignal?.removeEventListener('abort', relayAbort));
+      ).finally(() => budget.signal.removeEventListener('abort', relayAbort));
     };
 
     const helpers: Record<string, BrowserReplHelper> = {
@@ -121,7 +138,7 @@ export function createBrowserReplController(options: {
     if (options.navigate) {
       const navigate = options.navigate;
       helpers.navigate = async (navigateInput) => {
-        const result = await navigate(navigateInput, abortSignal);
+        const result = await navigate(navigateInput, budget.signal);
         pageTabId = navigateResultTabId(result) ?? pageTabId;
         return result;
       };
@@ -132,9 +149,25 @@ export function createBrowserReplController(options: {
       appendBrowserJsConsole(browserJsConsole, result.console);
       return result.value;
     };
+    for (const [name, helper] of Object.entries(helpers)) {
+      helpers[name] = async (...args) => {
+        const result = await helper(...args);
+        lastEvidence = result;
+        return result;
+      };
+    }
 
-    const valueResult = await options.runSandbox({ code: input.code, helpers, timeoutMs: timeoutMs(input), abortSignal });
-    return browserJsConsole.length ? { value: valueResult, browserjs: { console: browserJsConsole } } : { value: valueResult };
+    const valueResult = await options.runSandbox({ code: input.code, helpers, timeoutMs: DEFAULT_BROWSER_REPL_TIMEOUT_MS, abortSignal: budget.signal });
+    const evidence = valueResult === undefined ? lastEvidence : valueResult;
+    if (evidence === undefined && browserJsConsole.length === 0) {
+      return {
+        ok: false,
+        code: 'NO_EVIDENCE',
+        message: 'browserRepl completed without returning evidence.',
+        retryHint: 'Do not repeat possible side effects. Inspect fresh state with browser.snapshot, or return the result from multi-statement code.',
+      };
+    }
+    return browserJsConsole.length ? { value: evidence ?? null, browserjs: { console: browserJsConsole } } : { value: evidence };
   }
 
   return { run };
@@ -174,26 +207,76 @@ async function runInlineSandbox(code: string, args: unknown) {
   return new AsyncFunction('args', `"use strict";\n${code}`)(args);
 }
 
-function timeoutMs(input: BrowserReplInput) {
-  return input.timeoutMs ?? DEFAULT_BROWSER_REPL_TIMEOUT_MS;
-}
-
 function navigateResultTabId(value: unknown) {
   if (!isRecord(value) || !isRecord(value.tab)) return undefined;
   return Number.isInteger(value.tab.id) && Number(value.tab.id) > 0 ? Number(value.tab.id) : undefined;
+}
+
+function createRunBudget(parentSignal: AbortSignal | undefined, scheduler: Scheduler): RunBudget {
+  const abortController = new AbortController();
+  const startedAt = scheduler.now?.() ?? nowMs();
+  const deadline = startedAt + DEFAULT_BROWSER_REPL_TIMEOUT_MS;
+  let timedOut = false;
+  const relayAbort = () => abortController.abort();
+  if (parentSignal?.aborted) relayAbort();
+  else parentSignal?.addEventListener('abort', relayAbort, { once: true });
+  const timeoutId = scheduler.setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+  }, DEFAULT_BROWSER_REPL_TIMEOUT_MS);
+
+  return {
+    signal: abortController.signal,
+    limit(requestedMs) {
+      const remainingMs = Math.floor(deadline - (scheduler.now?.() ?? nowMs()));
+      if (remainingMs <= 0) {
+        timedOut = true;
+        abortController.abort();
+        throw browserReplTimeoutError();
+      }
+      return Math.min(requestedMs, remainingMs);
+    },
+    normalizeError(error) {
+      if (timedOut) return browserReplTimeoutError(error);
+      if (parentSignal?.aborted) return new Error('Task aborted', { cause: error });
+      return error instanceof Error ? error : new Error(String(error));
+    },
+    close() {
+      scheduler.clearTimeout(timeoutId);
+      parentSignal?.removeEventListener('abort', relayAbort);
+      abortController.abort();
+    },
+  };
+}
+
+function browserReplTimeoutError(cause?: unknown) {
+  const message = `browserRepl timed out after ${DEFAULT_BROWSER_REPL_TIMEOUT_MS}ms`;
+  return cause === undefined ? new Error(message) : new Error(message, { cause });
 }
 
 function withTimeout<T>(run: () => Promise<T>, timeoutMs: number, message: string, scheduler: Scheduler, abortController: AbortController) {
   if (abortController.signal.aborted) return Promise.reject(new Error('Task aborted'));
   const promise = run();
   let timeoutId: unknown;
+  let abort: () => void = () => undefined;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(new Error('Task aborted'));
+    abortController.signal.addEventListener('abort', abort, { once: true });
+  });
   const timeout = new Promise<never>((_resolve, reject) => {
     timeoutId = scheduler.setTimeout(() => {
-      abortController.abort();
       reject(new Error(`${message} after ${timeoutMs}ms`));
+      abortController.abort();
     }, timeoutMs);
   });
-  return Promise.race([promise, timeout]).finally(() => scheduler.clearTimeout(timeoutId));
+  return Promise.race([promise, timeout, aborted]).finally(() => {
+    scheduler.clearTimeout(timeoutId);
+    abortController.signal.removeEventListener('abort', abort);
+  });
+}
+
+function nowMs() {
+  return typeof performance === 'undefined' ? Date.now() : performance.now();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

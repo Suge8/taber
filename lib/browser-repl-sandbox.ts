@@ -15,10 +15,8 @@ export function runBrowserReplInSandbox(run: BrowserReplSandboxRun) {
 
   return new Promise<unknown>((resolve, reject) => {
     const runId = crypto.randomUUID();
-    let timeoutId: ReturnType<typeof setTimeout>;
 
     const cleanup = () => {
-      clearTimeout(timeoutId);
       window.removeEventListener('message', onMessage);
       run.abortSignal?.removeEventListener('abort', onAbort);
       iframe.remove();
@@ -46,7 +44,6 @@ export function runBrowserReplInSandbox(run: BrowserReplSandboxRun) {
 
     window.addEventListener('message', onMessage);
     run.abortSignal?.addEventListener('abort', onAbort, { once: true });
-    timeoutId = setTimeout(() => fail(new Error(`browserRepl timed out after ${run.timeoutMs}ms`)), run.timeoutMs);
     iframe.addEventListener('load', () => {
       iframe.contentWindow?.postMessage({ type: 'taber.sandbox.run', runId, code: run.code, helperNames: Object.keys(run.helpers) }, '*');
     }, { once: true });
