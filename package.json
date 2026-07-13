@@ -1,6 +1,6 @@
 {
   "name": "taber",
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Browser agent side panel for Chrome and Edge.",
   "type": "module",
   "packageManager": "pnpm@10.23.0",

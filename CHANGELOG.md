@@ -4,6 +4,46 @@
   <a href="#english">🇺🇸 English</a> · <a href="#中文">🇨🇳 中文</a>
 </p>
 
+## 0.6.0 - 2026-07-13
+
+### English
+
+#### Highlights
+
+- Added an optional personal profile for form filling. The profile stays local, is exposed only as a read-only `/profile.md` file, and requires explicit consent for each task.
+- Side-panel history now restores the conversation selected by the user, including a blank new conversation, after the panel is closed and reopened.
+- The side-panel shortcut now uses Chrome's native action toggle, so one browser-managed shortcut opens and closes the panel without extension-side state races.
+
+#### Changed
+
+- The shortcut pill reads the active binding from `chrome.commands.getAll()` and refreshes when the side panel regains focus.
+- Browser REPL guidance and runtime results now use serializable element descriptors, exact selectors, and clearer errors for invented refs, bare indexes, and helper misuse.
+- Browser form matching recognizes labels from single-field component containers while avoiding ambiguous multi-field rows.
+
+#### Fixed
+
+- Session selection writes and snapshot reads are serialized and transactionally coordinated, preventing stale events or delayed task startup from overwriting the user's last selection.
+- Personal profile reads are redacted in persisted tool events, tool runs, evidence digests, timelines, and exports while the authorized model call still receives the content.
+
+### 中文
+
+#### 重点
+
+- 新增可选个人资料，用于填表。资料只保存在本地，仅以只读 `/profile.md` 暴露，并且每个任务都必须显式授权。
+- 侧边栏关闭再打开时恢复用户最后选择的会话，包括空白新会话。
+- 侧边栏快捷键改用 Chrome 原生 action 切换，同一个浏览器快捷键可打开和关闭侧栏，不再依赖扩展侧状态猜测。
+
+#### 变更
+
+- 快捷键胶囊从 `chrome.commands.getAll()` 读取当前绑定，侧栏重新获得焦点后自动刷新。
+- Browser REPL 统一使用可序列化元素描述符、精确选择器，并对伪造 ref、裸索引和 helper 误用返回明确错误。
+- 表单匹配支持从单字段组件容器读取可见标签，同时避免把多字段行误判为同一字段。
+
+#### 修复
+
+- 会话选择写入与快照读取串行并在事务中协调，避免旧事件或延迟任务启动覆盖用户最后选择。
+- 个人资料读取在持久化工具事件、工具运行记录、证据摘要、时间线和导出中统一脱敏；已授权的当前模型调用仍可读取原文。
+
 ## 0.5.2 - 2026-07-13
 
 ### English
