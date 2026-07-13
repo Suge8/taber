@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import type { Transaction } from 'dexie';
 import 'fake-indexeddb/auto';
+import { projectAgentEvents } from '../lib/agent-event-projection.ts';
 
 const {
   database,
@@ -8,12 +10,16 @@ const {
   appendToolRun,
   appendAgentEvent,
   readLatestSessionSnapshot,
+  readSelectedSessionSnapshot,
   readSessionSnapshot,
+  selectSessionSnapshot,
+  setSelectedSessionId,
   setSessionRetentionLimit,
   UNLIMITED_SESSION_RETENTION,
 } = await import('../lib/db.ts');
 
 await testSnapshotPersistsRecords();
+await testSelectedSessionPersists();
 await testPruneDeletesOldSessionsAndLinkedRecords();
 await testUnlimitedRetentionDisablesPrune();
 
@@ -50,6 +56,38 @@ async function testSnapshotPersistsRecords() {
   assert.deepEqual(snapshot.toolRuns[0].output, { ok: true, source: 'currentPage', mode: 'article', content: '# Page', contentChars: 6, truncated: false });
   assert.deepEqual(snapshot.agentEvents[0].payload, { taskId: 'task-1', prompt: 'Summarize this page' });
   assert.deepEqual(snapshot.agentEvents[1].payload, { toolName: 'getDocument', output: { ok: true } });
+}
+
+async function testSelectedSessionPersists() {
+  await resetDatabase();
+
+  const selected = await createSession({ title: 'Selected', now: 1 });
+  const latest = await createSession({ title: 'Latest', now: 2 });
+
+  assert.equal((await readSelectedSessionSnapshot())?.session.id, latest.id);
+  const injectEvent = (_key: string, setting: { key: string }, transaction: Transaction) => {
+    if (setting.key !== 'selectedSessionId') return;
+    void transaction.table('agentEvents').add({
+      sessionId: selected.id,
+      type: 'message.created',
+      payload: { role: 'assistant', text: 'Arrived during selection' },
+      createdAt: 3,
+    });
+  };
+  database.settings.hook('creating').subscribe(injectEvent);
+  let selectedSnapshot;
+  try {
+    selectedSnapshot = await selectSessionSnapshot(selected.id);
+  } finally {
+    database.settings.hook('creating').unsubscribe(injectEvent);
+  }
+  assert.equal(selectedSnapshot.session.id, selected.id);
+  assert.equal(projectAgentEvents(selectedSnapshot.agentEvents).conversation.at(-1)?.text, 'Arrived during selection');
+  assert.equal((await readSelectedSessionSnapshot())?.session.id, selected.id);
+  assert.equal((await readLatestSessionSnapshot())?.session.id, latest.id);
+
+  await setSelectedSessionId(null);
+  assert.equal(await readSelectedSessionSnapshot(), undefined);
 }
 
 async function testPruneDeletesOldSessionsAndLinkedRecords() {

@@ -27,7 +27,9 @@ Retention:
 
 Sidepanel and Agent recovery:
 
-- On load, sidepanel opens Dexie and reads the latest session snapshot.
+- `settings.selectedSessionId` stores the last explicit selection; `null` means a new blank conversation.
+- Selection writes are serialized; selecting a saved session writes the setting and reads its snapshot in one Dexie transaction, so the last user action wins without an event gap.
+- On load, sidepanel restores that selection. Existing databases without the setting fall back to the latest session.
 - Conversation, tool timeline, sources, image preview, and model context are rebuilt from the Agent event projection over `agentEvents`.
 - `messages` is intentionally not a table; `agentEvents` is the single history source.
 - Long context is compacted into append-only `context.compacted` events.

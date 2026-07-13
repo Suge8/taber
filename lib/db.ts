@@ -3,6 +3,7 @@ import Dexie, { type EntityTable } from 'dexie';
 export const DEFAULT_SESSION_LIMIT = 30;
 export const UNLIMITED_SESSION_RETENTION = 'unlimited';
 export const sessionRetentionLimitKey = 'sessionRetentionLimit';
+export const selectedSessionIdKey = 'selectedSessionId';
 
 export type ProviderKind = 'openaiCompatible' | 'openaiApiKey' | 'openaiCodex' | 'xaiSub';
 
@@ -238,6 +239,26 @@ export async function readLatestSessionSnapshot() {
   return session ? readSessionSnapshot(session.id) : undefined;
 }
 
+export async function readSelectedSessionSnapshot() {
+  const setting = await database.settings.get(selectedSessionIdKey);
+  if (!setting) return readLatestSessionSnapshot();
+  const sessionId = parseSelectedSessionId(setting.value);
+  return sessionId === null ? undefined : readSessionSnapshot(sessionId);
+}
+
+export async function setSelectedSessionId(sessionId: number | null) {
+  await database.settings.put({ key: selectedSessionIdKey, value: parseSelectedSessionId(sessionId) });
+}
+
+export async function selectSessionSnapshot(sessionId: number) {
+  const selectedSessionId = parseSelectedSessionId(sessionId);
+  if (selectedSessionId === null) throw new Error('A selected session ID is required');
+  return database.transaction('rw', database.settings, database.sessions, database.toolRuns, database.agentEvents, async () => {
+    await database.settings.put({ key: selectedSessionIdKey, value: selectedSessionId });
+    return readSessionSnapshot(selectedSessionId);
+  });
+}
+
 export async function listSessions(): Promise<SessionListItem[]> {
   return database.sessions.orderBy('updatedAt').reverse().toArray();
 }
@@ -289,6 +310,12 @@ export function selectPrunableSessionIds(sessions: Session[], limit: SessionRete
     .sort((left, right) => right.updatedAt - left.updatedAt || right.id - left.id)
     .slice(limit)
     .map((session) => session.id);
+}
+
+function parseSelectedSessionId(value: unknown) {
+  if (value === null) return null;
+  if (Number.isInteger(value) && Number(value) > 0) return Number(value);
+  throw new Error(`Invalid selected session ID: ${String(value)}`);
 }
 
 function normalizeSessionRetentionLimit(value: unknown): SessionRetentionLimit {
