@@ -284,6 +284,16 @@ async function testPageRuntimeSelectorBatchFillFormAndShadow() {
   const company = page.addElement(new FakeHTMLInputElement('input'), { id: 'company', placeholder: '公司名称' });
   const contactA = page.addElement(new FakeHTMLInputElement('input'), { ariaLabel: '联系人' });
   const contactB = page.addElement(new FakeHTMLInputElement('input'), { ariaLabel: '联系人' });
+  // Component-library form item: visible label is outside nested wrappers and
+  // not connected with for/aria-labelledby; the input's own name is generic.
+  const phoneItem = page.addElement(new FakeHTMLElement('div'));
+  phoneItem.append(new FakeHTMLElement('span'));
+  phoneItem.children[0].textContent = 'Phone Number';
+  const phoneControl = new FakeHTMLElement('div');
+  const phone = new FakeHTMLInputElement('input');
+  phone.setAttribute('aria-label', 'number picker');
+  phoneControl.append(phone);
+  phoneItem.append(phoneControl);
   const host = page.addElement(new FakeHTMLElement('div'), { id: 'shadow-host' });
   const shadowInput = new FakeHTMLInputElement('input');
   shadowInput.id = 'shadow-name';
@@ -295,12 +305,13 @@ async function testPageRuntimeSelectorBatchFillFormAndShadow() {
   assert.equal(dryRun.filled[0].dryRun, true);
   assert.equal(project.value, '');
 
-  const filled = await runPageValue(page, { helper: 'fillForm', args: [{ fields: { 项目名称: 'Alpha', 公司名称: 'Acme', 联系人: 'Ada', 不存在: 'x' } }] });
+  const filled = await runPageValue(page, { helper: 'fillForm', args: [{ fields: { 项目名称: 'Alpha', 公司名称: 'Acme', 联系人: 'Ada', 'Phone Number': '18565545564', 不存在: 'x' } }] });
   assert.equal(filled.ok, false);
   assert.equal(project.value, 'Alpha');
   assert.equal(company.value, 'Acme');
   assert.equal(contactA.value, '');
   assert.equal(contactB.value, '');
+  assert.equal(phone.value, '18565545564', 'fillForm must use a nearest single-field container label');
   assert.deepEqual(filled.ambiguous.map((item: Record<string, unknown>) => item.field), ['联系人']);
   assert.deepEqual(filled.missing.map((item: Record<string, unknown>) => item.field), ['不存在']);
 
@@ -1201,7 +1212,7 @@ async function testBrowserReplNeverReturnsSilentUndefined() {
     ok: false,
     code: 'NO_EVIDENCE',
     message: 'browserRepl completed without returning evidence.',
-    retryHint: 'Do not repeat possible side effects. Inspect fresh state with browser.snapshot, or return the result from multi-statement code.',
+    retryHint: 'Do not repeat possible side effects. Inspect fresh state with browser.snapshot, or return the result from multi-statement code. For action sequences prefer await batch(actions), which returns per-step evidence.',
   });
 }
 
@@ -1244,12 +1255,12 @@ async function testRunsSandboxWithHelpersAndElementRefs() {
       assert.deepEqual(Object.keys(run.helpers).sort(), ['batch', 'browserjs', 'click', 'fill', 'fillForm', 'listInteractiveElements', 'observe', 'pickElement', 'pickUserElement', 'press', 'query', 'queryText', 'readLinksAndButtons', 'readVisibleText', 'sandbox', 'scroll', 'waitFor']);
       assert.equal(await run.helpers.sandbox('return args.value + 1', { value: 1 }), 2);
       const observed = await run.helpers.observe();
-      assert.deepEqual(observed, { summary: { title: 'Test' }, elements: [{ index: 1, tag: 'button', name: 'Save' }] });
-      return run.helpers.click(1);
+      assert.deepEqual(observed, { summary: { title: 'Test' }, elements: [{ index: 1, tag: 'button', name: 'Save', selector: '#save' }] });
+      return run.helpers.click(observed.elements[0]);
     },
   });
 
-  assert.deepEqual(await controller.run({ code: 'return click(1)' }), { value: { clicked: true } });
+  assert.deepEqual(await controller.run({ code: 'const {elements}=await observe(); return click(elements[0])' }), { value: { clicked: true } });
   assert.equal(pageCommands[1].helper, 'click');
   assert.equal(pageCommands[1].timeoutMs, 5_000);
   assert.equal(typeof pageCommands[1].cancelKey, 'string');
@@ -1270,10 +1281,10 @@ async function testRunsSandboxWithSelectorBatchAndFillFormHelpers() {
       throw new Error(`unexpected command: ${command.helper}`);
     },
     async runSandbox(run) {
-      await assert.rejects(run.helpers.click(9), /one browserRepl call/);
+      await assert.rejects(run.helpers.click(9), /cannot be a bare number/);
       const selectorFill = await run.helpers.fill('#name', 'alpha');
-      await run.helpers.observe();
-      const batchResult = await run.helpers.batch([{ action: 'click', index: 1 }, { action: 'fill', selector: '#name', value: 'beta' }]);
+      const observed = await run.helpers.observe() as { elements: Array<{ index: number; selector: string }> };
+      const batchResult = await run.helpers.batch([{ action: 'click', target: observed.elements[0] }, { action: 'fill', selector: '#name', value: 'beta' }]);
       const formResult = await run.helpers.fillForm({ fields: { Name: 'alpha' }, dryRun: true });
       const picked = await run.helpers.pickUserElement('Pick one');
       return { selectorFill, batchResult, formResult, picked };
@@ -1284,7 +1295,7 @@ async function testRunsSandboxWithSelectorBatchAndFillFormHelpers() {
   assert.ok('value' in result);
   assert.deepEqual(result.value, {
     selectorFill: { filled: true, target: '#name' },
-    batchResult: { ok: true, actions: [{ action: 'click', index: 1, target: ref }, { action: 'fill', selector: '#name', value: 'beta', target: '#name' }] },
+    batchResult: { ok: true, actions: [{ action: 'click', target: ref }, { action: 'fill', selector: '#name', value: 'beta', target: '#name' }] },
     formResult: { ok: true, dryRun: true },
     picked: { selector: '#picked', attributes: { id: 'picked' }, args: [{ message: 'Pick one' }] },
   });
@@ -1342,14 +1353,14 @@ async function testIndexesCannotBeReusedAcrossBrowserReplCalls() {
     async runSandbox(run) {
       if (run.code === 'observe') {
         const observed = await run.helpers.observe() as { elements: Array<{ index: number }> };
-        return observed.elements[0].index;
+        return observed.elements[0];
       }
       return run.helpers.click(1);
     },
   });
 
-  assert.deepEqual(await controller.run({ code: 'observe' }), { value: 1 });
-  await assert.rejects(() => controller.run({ code: 'reuse old index' }), /one browserRepl call/);
+  assert.deepEqual(await controller.run({ code: 'observe' }), { value: { index: 1, selector: '#save' } });
+  await assert.rejects(() => controller.run({ code: 'reuse old index' }), /cannot be a bare number/);
 }
 
 async function testRunsSandboxWithNavigateHelper() {
@@ -1396,9 +1407,9 @@ async function testIndexesSurviveLaterQueriesInSameBrowserReplCall() {
       throw new Error(`unexpected command: ${command.helper}`);
     },
     async runSandbox(run) {
-      const observed = await run.helpers.observe() as { elements: Array<{ index: number }> };
+      const observed = await run.helpers.observe() as { elements: Array<{ index: number; selector: string }> };
       await run.helpers.query('#b');
-      return run.helpers.click(observed.elements[0].index);
+      return run.helpers.click(observed.elements[0]);
     },
   });
   assert.deepEqual(await controller.run({ code: 'return 1' }), { value: { clicked: '#a' } });
@@ -2052,6 +2063,78 @@ function createFrameRouterTestExecutor(options: { frames(): Array<{ frameId: num
   });
 }
 
+async function testHelperResultMisuseGetsShapeHint() {
+  const failWith = (message: string) => createBrowserReplController({
+    async getCurrentTabId() { return 1; },
+    async executePageCommand() { throw new Error('unexpected page command'); },
+    async runSandbox() { throw new TypeError(message); },
+  });
+
+  // Cover direct, aliased, and transpiler-style errors from the real sessions.
+  await assert.rejects(failWith('observe(...).filter is not a function').run({ code: 'observe().filter(x=>x)' }), /return \{ elements \}.*\.elements\.slice/s);
+  await assert.rejects(failWith('a.filter is not a function').run({ code: 'const a=await observe(); return a.filter(x=>x)' }), /return \{ elements \}/);
+  await assert.rejects(failWith('(intermediate value).slice is not a function').run({ code: "return (await query('input')).slice(0,20)" }), /Elements are serializable descriptors/);
+  await assert.rejects(failWith('(intermediate value).slice is not a function').run({ code: 'return (await readVisibleText()).slice(0,20)' }), /returns \{ text, title, url \}/);
+
+  // Unrelated TypeErrors pass through untouched.
+  await assert.rejects(failWith('somethingElse(...).map is not a function').run({ code: 'somethingElse().map(x=>x)' }), (error: Error) => /somethingElse/.test(error.message) && !error.message.includes('serializable descriptors'));
+}
+
+async function testStaleRefRecoverySnapshotWidensTinyActionLimit() {
+  let frames = [
+    { frameId: 0, parentFrameId: -1, url: 'https://main.test/page' },
+    { frameId: 1, parentFrameId: 0, url: 'https://main.test/frame' },
+  ];
+  const pages = new Map([
+    [0, new FrameRouterFakePage('Main', 'https://main.test/page', [frameButton('Main CTA')])],
+    [1, new FrameRouterFakePage('Frame', 'https://main.test/frame', [frameButton('Frame CTA')])],
+  ]);
+  const snapshotLimits: unknown[] = [];
+  const executor = createBrowserReplPageExecutor({
+    async sendMessage(message) {
+      if (isRecord(message) && message.type === chromeApiRequestType && message.action === 'webNavigation.getAllFrames') return frames;
+      if (isRecord(message) && message.type === chromeApiRequestType && message.action === 'userScripts.execute') {
+        const injection = (message.args as unknown[])[0] as Record<string, any>;
+        const frameId = Number(injection.target?.frameIds?.[0] ?? 0);
+        const input = readInjectedPageCommand(injection).args[0] as Record<string, unknown>;
+        if (input.action === 'snapshot') snapshotLimits.push(input.limit);
+        const page = pages.get(frameId);
+        if (!page) throw new Error(`Missing fake frame page: ${frameId}`);
+        return [{ result: { ok: true, value: page.browser(input) } }];
+      }
+      throw new Error(`Unexpected message: ${JSON.stringify(message)}`);
+    },
+    readTargetTabId: () => 1,
+    async errorFromResponse(message) { return new Error(message); },
+  });
+
+  const snapshot = await executor.executePageCommand(1, { helper: 'browser', args: [{ action: 'snapshot' }] }) as Record<string, any>;
+  const frameRef = findFrameElement(snapshot.state, 'https://main.test/frame', 'Frame CTA').ref;
+  frames = frames.map((frame) => frame.frameId === 1 ? { ...frame, url: 'https://main.test/reloaded' } : frame);
+  snapshotLimits.length = 0;
+
+  const stale = await executor.executePageCommand(1, { helper: 'browser', args: [{ action: 'fill', target: { ref: frameRef }, value: 'x', limit: 1 }] }) as Record<string, any>;
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'STALE_REF');
+  assert(isRecord(stale.state), 'STALE_REF must carry recovery state');
+  assert(snapshotLimits.length > 0, 'stale ref must trigger a recovery snapshot');
+  for (const limit of snapshotLimits) assert.equal(limit, 30, 'recovery snapshots must widen a tiny action limit');
+
+  // Model-invented ref shapes (spliced "b<id>.133.143", suffixed "b<id>.1334x")
+  // are named for what they are instead of a misleading "page changed".
+  for (const inventedRef of [`${frameRef}.143`, `${frameRef}4x`]) {
+    const invented = await executor.executePageCommand(1, { helper: 'browser', args: [{ action: 'fill', target: { ref: inventedRef }, value: 'x' }] }) as Record<string, any>;
+    assert.equal(invented.ok, false);
+    assert.equal(invented.code, 'INVALID_TARGET');
+    assert.match(String(invented.message), /never issued|never constructed or edited/);
+    assert(isRecord(invented.state), 'invented ref failures must carry recovery state');
+  }
+
+  // A well-shaped but unknown ref (evicted or from another tab) stays STALE_REF.
+  const unknownButValid = await executor.executePageCommand(1, { helper: 'browser', args: [{ action: 'fill', target: { ref: 'bdeadbeef1234.7' }, value: 'x' }] }) as Record<string, any>;
+  assert.equal(unknownButValid.code, 'STALE_REF');
+}
+
 function readInjectedPageCommand(injection: Record<string, any>) {
   const code = String(injection.js?.[0]?.code ?? '');
   const start = code.lastIndexOf('})({');
@@ -2500,6 +2583,8 @@ await testExhaustedRunBudgetFailsBeforePageCommand();
 await testRunTimeoutSendsPageCancellation();
 await testTaskAbortCancelsPageHelper();
 await testRunCleanupCancelsUnawaitedHelper();
+await testHelperResultMisuseGetsShapeHint();
+await testStaleRefRecoverySnapshotWidensTinyActionLimit();
 database.close();
 
 console.info('browser repl tests passed');
