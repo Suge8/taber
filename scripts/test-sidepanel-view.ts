@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { projectAgentEvents } from '../lib/agent-event-projection.ts';
 import { rawToolDetails, toolHeaderSummary } from '../lib/sidepanel-tool-presentation.ts';
-import { activePart, activityEndedAt, activityGroupStatus, activityStartedAt, controlledTargetFromContext, createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, groupTurnParts, hideReasoningText, latestImagePreview, mergeLiveAgentEvent, quickActionOrder, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
+import { activePart, activityEndedAt, activityGroupStatus, activityStartedAt, agentEventChangesWorkspace, controlledTargetFromContext, createIntentPrompt, deriveConversation, deriveSidebarTaskView, deriveSources, deriveTimeline, deriveToolTimeline, formatPayload, formatRawEvidence, groupTurnParts, hideReasoningText, latestImagePreview, mergeLiveAgentEvent, quickActionOrder, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup } from '../lib/sidepanel-view.ts';
 import type { AgentEvent } from '../lib/db.ts';
 import { detectLocale, formatTime, messages as sidepanelMessages } from '../lib/sidepanel-i18n.ts';
 import { normalizeAssistantMarkdown } from '../lib/components/ai-elements/response/markdown.ts';
@@ -21,6 +21,20 @@ const outOfOrderEvents: AgentEvent[] = [
 const reorderedEvents = mergeLiveAgentEvent(outOfOrderEvents, { id: 2, sessionId: 1, type: 'message.created', payload: {}, createdAt: 2 });
 assert.deepEqual(reorderedEvents.map((event) => event.id), [1, 2, 3]);
 assert.strictEqual(mergeLiveAgentEvent(reorderedEvents, reorderedEvents[1]), reorderedEvents);
+
+const workspaceEvents: Array<[AgentEvent, boolean]> = [
+  [{ id: 10, sessionId: 1, type: 'tool.completed', payload: { toolName: 'fs', output: { action: 'write', path: '/workspace/report.md' } }, createdAt: 10 }, true],
+  [{ id: 11, sessionId: 1, type: 'tool.completed', payload: { toolName: 'getDocument', output: { savedTo: '/workspace/saved-doc.md' } }, createdAt: 11 }, true],
+  [{ id: 12, sessionId: 1, type: 'tool.completed', payload: { toolName: 'browserRepl', output: { savedTo: '/workspace/saved-value.json', value: 'preview' } }, createdAt: 12 }, true],
+  [{ id: 13, sessionId: 1, type: 'message.appended', payload: { delta: 'text' }, createdAt: 13 }, false],
+  [{ id: 14, sessionId: 1, type: 'tool.completed', payload: { toolName: 'fs', output: { action: 'read', path: '/workspace/report.md' } }, createdAt: 14 }, false],
+  [{ id: 15, sessionId: 1, type: 'tool.completed', payload: { toolName: 'fs', output: { action: 'write', path: '/skills/example.md' } }, createdAt: 15 }, false],
+  [{ id: 16, sessionId: 1, type: 'tool.completed', payload: { toolName: 'fs', output: { action: 'read', path: '/profile.md' } }, createdAt: 16 }, false],
+  [{ id: 17, sessionId: 1, type: 'tool.failed', payload: { toolName: 'fs', output: { action: 'write', path: '/workspace/failed.md' } }, createdAt: 17 }, false],
+  [{ id: 18, sessionId: 1, type: 'tool.completed', payload: { toolName: 'extractImage', output: { path: '/workspace/not-a-write.png', url: 'https://example.test/image.png', dataUrl: 'data:image/png;base64,x' } }, createdAt: 18 }, false],
+  [{ id: 19, sessionId: 1, type: 'tool.completed', payload: { toolName: 'browserRepl', output: { value: { savedTo: '/workspace/nested.json' } } }, createdAt: 19 }, false],
+];
+for (const [event, expected] of workspaceEvents) assert.equal(agentEventChangesWorkspace(event), expected, `workspace mutation classification failed for event ${event.id}`);
 
 const projection = projectAgentEvents([...events]);
 assert.equal(projection.taskState, 'running');

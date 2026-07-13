@@ -85,6 +85,13 @@ export function mergeLiveAgentEvent(events: AgentEvent[], event: AgentEvent): Ag
   return [...events.slice(0, index), event, ...events.slice(index)];
 }
 
+export function agentEventChangesWorkspace(event: AgentEvent): boolean {
+  if (event.type !== 'tool.completed') return false;
+  const output = readRecord(readRecord(event.payload)?.output);
+  if (!output) return false;
+  return (output.action === 'write' && isWorkspacePath(output.path)) || isWorkspacePath(output.savedTo);
+}
+
 export type TurnBlock =
   | { kind: 'text'; id: string; createdAt: number; message: ConversationMessage }
   | { kind: 'activity'; id: string; parts: ActivityPart[] };
@@ -273,6 +280,14 @@ function timelineEntryFromProjection(entry: ProjectedTimelineEntry, toolsById: M
 
 function sourceLinkFromProjection(source: ProjectedSource, labels: { currentTab: string; tool: string }): SourceLink {
   return { label: source.label || source.fallbackText || labels[source.fallbackLabel], url: source.url, domain: source.domain, faviconUrl: source.faviconUrl, tabId: source.tabId, windowId: source.windowId };
+}
+
+function isWorkspacePath(value: unknown) {
+  return typeof value === 'string' && value.startsWith('/workspace/');
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function mergedSources(projection: AgentEventProjection, context: Record<string, unknown> | undefined): ProjectedSource[] {

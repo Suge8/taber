@@ -7,7 +7,7 @@
   import { MAX_FILE_BYTES, deleteSessionFile, listSessionFiles, writeSessionFile } from '$lib/workspace-files.ts';
   import { readForegroundMode, setForegroundMode } from '$lib/foreground-mode.ts';
   import { profileConsentAfterStart, readPersonalProfile } from '$lib/personal-profile.ts';
-  import { controlledTargetFromContext, imagePreviewFromProjection, mergeLiveAgentEvent, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup, sidebarTaskViewFromProjection, sourcesFromProjection, timelineFromProjection, type SettingsTab, type SourceLink } from '$lib/sidepanel-view.ts';
+  import { agentEventChangesWorkspace, controlledTargetFromContext, imagePreviewFromProjection, mergeLiveAgentEvent, settingsTabStartsBrowserControlGuide, shouldAdvanceToProviderSetup, sidebarTaskViewFromProjection, sourcesFromProjection, timelineFromProjection, type SettingsTab, type SourceLink } from '$lib/sidepanel-view.ts';
   import { getReasoningEffort, getSelectedModelId, listProvidersWithModels, normalizeReasoningEffortForModel, setReasoningEffort, setSelectedModelId, type ProviderWithModels, type ReasoningEffort } from '$lib/provider-store.ts';
   import { detectLocale, localeManualStorageKey, localeStorageKey, messages, persistLocale, type Locale } from '$lib/sidepanel-i18n.ts';
   import { buildSessionExportJsonl, sessionExportFileName } from '$lib/session-export.ts';
@@ -64,11 +64,6 @@
 
   const events = $derived(snapshot?.agentEvents ?? []);
   const eventProjection = $derived(projectAgentEvents(events));
-
-  $effect(() => {
-    events.length;
-    void refreshSessionFiles(currentSessionId);
-  });
   const timelineEntries = $derived(timelineFromProjection(eventProjection));
   const taskView = $derived(sidebarTaskViewFromProjection(eventProjection));
   const t = $derived(messages[locale]);
@@ -231,9 +226,12 @@
   }
 
   function applySnapshot(nextSnapshot: SessionSnapshot | undefined, transitionView = false) {
+    const nextSessionId = nextSnapshot?.session.id ?? null;
+    const sessionChanged = currentSessionId !== nextSessionId;
     snapshot = nextSnapshot;
-    currentSessionId = nextSnapshot?.session.id ?? null;
+    currentSessionId = nextSessionId;
     liveTaskState = projectAgentEvents(nextSnapshot?.agentEvents ?? []).taskState === 'running' ? 'running' : 'idle';
+    if (sessionChanged) void refreshSessionFiles(nextSessionId);
     if (transitionView) sessionViewEpoch += 1;
   }
 
@@ -244,6 +242,7 @@
       return;
     }
     snapshot = { ...snapshot, agentEvents: mergeLiveAgentEvent(snapshot.agentEvents, record) };
+    if (agentEventChangesWorkspace(record)) void refreshSessionFiles(eventSessionId);
   }
 
   function sessionRequestIsCurrent(requestId: number, sessionId: number | null) {

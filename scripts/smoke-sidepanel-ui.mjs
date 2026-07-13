@@ -74,9 +74,12 @@ try {
     await evaluate(pageCdp, clearDatabaseExpression());
     await evaluate(pageCdp, seedDatabaseExpression());
     await reloadSidepanel(pageCdp);
+    await evaluate(pageCdp, seedWorkspaceFilesExpression());
+    await reloadSidepanel(pageCdp);
     await waitForReady(pageCdp);
     await evaluateStable(pageCdp, waitForTextExpression('Summarize this page'));
     await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'no-preference' }] });
+    const workspaceFilesReport = await runWorkspaceFilesPhase(pageCdp);
     const idleSourcesReport = await runIdleSourcesPhase(pageCdp);
     await pageCdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     const recoveryReport = await evaluateStable(pageCdp, recoveryReportExpression());
@@ -87,12 +90,13 @@ try {
     const historyReport = await runHistoryPhase(pageCdp);
     const multiTurnReport = await runMultiTurnPhase(pageCdp);
 
-    const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, idleSources: idleSourcesReport, recovery: recoveryReport, foregroundMode: foregroundModeReport, shortcut: shortcutReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
+    const output = { sidePanelOpenAttempt, sidepanelUrl, onboarding: onboardingReport, browserControlExistingModel: browserControlExistingModelReport, providerSettings: providerSettingsReport, targetSwitch: targetSwitchReport, workspaceFiles: workspaceFilesReport, idleSources: idleSourcesReport, recovery: recoveryReport, foregroundMode: foregroundModeReport, shortcut: shortcutReport, i18n: i18nReport, history: historyReport, multiTurn: multiTurnReport };
     console.log(JSON.stringify(output, null, 2));
     assertAll('onboarding', onboardingReport);
     assertAll('browserControlExistingModel', browserControlExistingModelReport);
     assertAll('providerSettings', providerSettingsReport);
     assertAll('targetSwitch', targetSwitchReport);
+    assertAll('workspaceFiles', workspaceFilesReport);
     assertAll('idleSources', idleSourcesReport);
     assertAll('recovery', recoveryReport);
     assertAll('foregroundMode', foregroundModeReport);
@@ -1163,6 +1167,81 @@ async function selectHistoryThenNewRapidly(cdp) {
   })`);
 }
 
+async function runWorkspaceFilesPhase(cdp) {
+  const seededFiles = await readWorkspaceFiles(cdp);
+  if (!seededFiles.some((file) => file.sessionId === 2 && file.name === 'initial-workspace.md')) throw new Error(`workspace file fixture missing: ${JSON.stringify(seededFiles)}`);
+  await evaluateStable(cdp, waitForTextExpression('initial-workspace.md'));
+
+  await openHistory(cdp);
+  await selectHistoryItem(cdp, 'Older session', ['2', '1']);
+  await waitForSessionView(cdp, '1');
+  const switchedSessionFiles = await evaluate(cdp, `document.body.innerText.includes('older-workspace.md') && !document.body.innerText.includes('initial-workspace.md')`);
+  await deleteVisibleWorkspaceFile(cdp, 'older-workspace.md');
+  const deletedThroughUi = await workspaceFileMissing(cdp, 1, 'older-workspace.md');
+
+  await openHistory(cdp);
+  await selectHistoryItem(cdp, 'Latest markdown session', ['1', '2']);
+  await waitForSessionView(cdp, '2');
+  const returnedSessionFiles = await evaluate(cdp, `document.body.innerText.includes('initial-workspace.md') && !document.body.innerText.includes('older-workspace.md')`);
+
+  return { initialFileDisplayed: true, switchedSessionFiles, deletedThroughUi, returnedSessionFiles };
+}
+
+function readWorkspaceFiles(cdp) {
+  return evaluate(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['files'], 'readonly');
+      const request = tx.objectStore('files').getAll();
+      request.onsuccess = () => { const files = request.result.map(({ id, sessionId, name }) => ({ id, sessionId, name })); db.close(); resolve(files); };
+      request.onerror = () => { const error = request.error; db.close(); reject(error); };
+    };
+  })`);
+}
+
+async function deleteVisibleWorkspaceFile(cdp, fileName) {
+  await evaluate(cdp, `(() => {
+    const trigger = [...document.querySelectorAll('button')].find((button) => button.textContent.includes(${JSON.stringify(fileName)}));
+    if (!trigger) throw new Error('workspace file trigger not found: ' + ${JSON.stringify(fileName)});
+    trigger.click();
+  })()`);
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const tick = () => {
+      const item = [...document.querySelectorAll('[role="menuitem"]')].find((node) => node.textContent.trim() === 'Delete');
+      if (item) { item.click(); resolve(true); return; }
+      if (Date.now() > deadline) { reject(new Error('workspace delete item not found')); return; }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  })`);
+  await evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5000;
+    const tick = () => {
+      if (!document.body.innerText.includes(${JSON.stringify(fileName)})) { resolve(true); return; }
+      if (Date.now() > deadline) { reject(new Error('workspace file did not disappear after delete')); return; }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  })`);
+}
+
+function workspaceFileMissing(cdp, sessionId, fileName) {
+  return evaluate(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['files'], 'readonly');
+      const request = tx.objectStore('files').index('[sessionId+name]').get([${sessionId}, ${JSON.stringify(fileName)}]);
+      request.onsuccess = () => { const missing = request.result === undefined; db.close(); resolve(missing); };
+      request.onerror = () => { const error = request.error; db.close(); reject(error); };
+    };
+  })`);
+}
+
 async function runMultiTurnPhase(cdp) {
   await installSendMessageStub(cdp);
   await submitPrompt(cdp, 'Follow up one');
@@ -1331,6 +1410,7 @@ function clearDatabaseExpression() {
       if (!db.objectStoreNames.contains('toolRuns')) { const store = db.createObjectStore('toolRuns', { keyPath: 'id', autoIncrement: true }); store.createIndex('sessionId', 'sessionId'); store.createIndex('createdAt', 'createdAt'); store.createIndex('toolName', 'toolName'); }
       if (!db.objectStoreNames.contains('agentEvents')) { const store = db.createObjectStore('agentEvents', { keyPath: 'id', autoIncrement: true }); store.createIndex('sessionId', 'sessionId'); store.createIndex('createdAt', 'createdAt'); store.createIndex('type', 'type'); }
       if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('files')) { const store = db.createObjectStore('files', { keyPath: 'id', autoIncrement: true }); store.createIndex('sessionId', 'sessionId'); store.createIndex('[sessionId+name]', ['sessionId', 'name'], { unique: true }); }
     };
     localStorage.setItem('taber.locale', 'en');
     localStorage.setItem('__taberSmokeAllSitesGranted', 'false');
@@ -1347,7 +1427,7 @@ function clearDatabaseExpression() {
     const open = indexedDB.open('taber');
     open.onupgradeneeded = () => createTaberStores(open.result);
     const db = await new Promise((resolve, reject) => { open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
-    const stores = ['providers', 'providerCredentials', 'models', 'sessions', 'toolRuns', 'agentEvents', 'settings'].filter((store) => db.objectStoreNames.contains(store));
+    const stores = ['providers', 'providerCredentials', 'models', 'sessions', 'toolRuns', 'agentEvents', 'settings', 'files'].filter((store) => db.objectStoreNames.contains(store));
     if (stores.length > 0) await new Promise((resolve, reject) => {
       const tx = db.transaction(stores, 'readwrite');
       for (const store of stores) tx.objectStore(store).clear();
@@ -1356,6 +1436,27 @@ function clearDatabaseExpression() {
     });
     db.close();
   })()`;
+}
+
+function seedWorkspaceFilesExpression() {
+  return `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['files'], 'readwrite');
+      const store = tx.objectStore('files');
+      const now = Date.now();
+      const add = (sessionId, name, content) => {
+        const data = new TextEncoder().encode(content).buffer;
+        store.add({ sessionId, name, mimeType: 'text/markdown', data, size: data.byteLength, createdAt: now, updatedAt: now });
+      };
+      add(1, 'older-workspace.md', 'older file');
+      add(2, 'initial-workspace.md', 'initial file');
+      tx.oncomplete = () => { db.close(); resolve(true); };
+      tx.onerror = () => { const error = tx.error; db.close(); reject(error); };
+    };
+  })`;
 }
 
 function seedOpenAIApiProviderExpression() {
@@ -1416,9 +1517,13 @@ function seedDatabaseExpression({ browserControlReady = true } = {}) {
       store.createIndex('sessionId', 'sessionId'); store.createIndex('createdAt', 'createdAt'); store.createIndex('type', 'type');
     }
     if (!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'key' });
+    if (!db.objectStoreNames.contains('files')) {
+      const store = db.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
+      store.createIndex('sessionId', 'sessionId'); store.createIndex('[sessionId+name]', ['sessionId', 'name'], { unique: true });
+    }
   };
   const db = await new Promise((resolve, reject) => { open.onsuccess = () => resolve(open.result); open.onerror = () => reject(open.error); });
-  const stores = ['providers', 'providerCredentials', 'models', 'sessions', 'agentEvents', 'settings'];
+  const stores = ['providers', 'providerCredentials', 'models', 'sessions', 'agentEvents', 'settings', 'files'];
   await new Promise((resolve, reject) => {
     const clearTx = db.transaction(stores, 'readwrite');
     for (const store of stores) clearTx.objectStore(store).clear();
