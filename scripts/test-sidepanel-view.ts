@@ -407,11 +407,15 @@ assert.equal(createIntentPrompt('research', '', [], sidepanelMessages.en.prompts
 assert.equal(createIntentPrompt('compare', 'camera', [], sidepanelMessages.en.prompts), sidepanelMessages.en.prompts.compareTopic('camera'));
 assert.match(createIntentPrompt('research', 'agents', [{ title: 'A', url: 'https://a.example' }, { title: '', url: 'https://b.example/path' }], sidepanelMessages.en.prompts), /agents[\s\S]*https:\/\/a\.example[\s\S]*b\.example/);
 
-for (let index = 1; index < timelineEntries.length; index++) {
-  assert.ok(
-    timelineEntries[index].createdAt >= timelineEntries[index - 1].createdAt,
-    'timeline must be sorted by createdAt ascending',
-  );
-}
+const clockRollbackTimeline = deriveTimeline([
+  { id: 4, sessionId: 1, type: 'task.completed', payload: { taskId: 'rollback', text: 'done' }, createdAt: 902 },
+  { id: 2, sessionId: 1, type: 'tool.started', payload: { taskId: 'rollback', toolCallId: 'rollback-call', toolName: 'navigate', input: { action: 'currentTab' } }, createdAt: 900 },
+  { id: 1, sessionId: 1, type: 'task.started', payload: { taskId: 'rollback', prompt: 'go' }, createdAt: 1000 },
+  { id: 3, sessionId: 1, type: 'tool.completed', payload: { taskId: 'rollback', toolCallId: 'rollback-call', toolName: 'navigate', output: { action: 'currentTab' } }, createdAt: 901 },
+]);
+assert.deepEqual(clockRollbackTimeline.map((entry) => entry.kind), ['message', 'assistantTurn']);
+assert.equal(clockRollbackTimeline[0]?.kind === 'message' ? clockRollbackTimeline[0].message.text : '', 'go');
+assert.equal(clockRollbackTimeline[1]?.kind === 'assistantTurn' ? clockRollbackTimeline[1].turn.status : '', 'completed');
+assert.deepEqual(clockRollbackTimeline[1]?.kind === 'assistantTurn' ? clockRollbackTimeline[1].turn.parts.map((part) => part.kind) : [], ['tool', 'text']);
 
 console.log('sidepanel view tests passed');

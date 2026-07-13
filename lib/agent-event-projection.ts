@@ -31,6 +31,7 @@ export type ProjectedConversationMessage = {
   text: string;
   createdAt: number;
   taskId?: string;
+  eventId?: number;
 };
 
 export type ProjectedReasoningRun = {
@@ -61,6 +62,8 @@ export type ProjectedAssistantTimelineTurn = {
 export type ProjectedTimelineEntry =
   | { kind: 'message'; id: string; createdAt: number; message: ProjectedConversationMessage }
   | { kind: 'assistantTurn'; id: string; createdAt: number; turn: ProjectedAssistantTimelineTurn };
+
+type OrderedTimelineEntry = { entry: ProjectedTimelineEntry; eventId: number; phase: number };
 
 export type ProjectedSource = {
   url: string;
@@ -189,14 +192,14 @@ function projectConversation(events: AgentEvent[]): ProjectedConversationMessage
 }
 
 function projectTimeline(taskGroups: ProjectedTaskGroup[], messages: ProjectedConversationMessage[], tools: ProjectedToolRun[]): ProjectedTimelineEntry[] {
-  const entries: ProjectedTimelineEntry[] = [];
+  const entries: OrderedTimelineEntry[] = [];
   const usedMessages = new Set<string>();
   const usedTools = new Set<string>();
 
   for (const group of taskGroups) {
     if (group.prompt) {
-      const message = { id: `event-${group.started.id}`, role: 'user' as const, text: group.prompt, createdAt: group.started.createdAt, taskId: group.taskId };
-      entries.push({ kind: 'message', id: `m:${message.id}`, createdAt: message.createdAt, message });
+      const message = { id: `event-${group.started.id}`, role: 'user' as const, text: group.prompt, createdAt: group.started.createdAt, taskId: group.taskId, eventId: group.started.id };
+      entries.push({ entry: { kind: 'message', id: `m:${message.id}`, createdAt: message.createdAt, message }, eventId: group.started.id, phase: 0 });
       usedMessages.add(message.id);
     }
 
@@ -204,17 +207,19 @@ function projectTimeline(taskGroups: ProjectedTaskGroup[], messages: ProjectedCo
     const taskTools = tools.filter((tool) => tool.taskId === group.taskId || taskEventIds.has(tool.eventId));
     const turn = createTaskAssistantTurn(group, taskTools, usedMessages);
     if (turn) {
-      entries.push({ kind: 'assistantTurn', id: `a:${turn.id}`, createdAt: turn.createdAt, turn });
+      entries.push({ entry: { kind: 'assistantTurn', id: `a:${turn.id}`, createdAt: turn.createdAt, turn }, eventId: Math.min(...turn.parts.map(timelinePartEventId)), phase: 1 });
       for (const part of turn.parts) if (part.kind === 'tool') usedTools.add(part.tool.id);
     }
   }
 
-  const fallbackEntries = [
-    ...messages.filter((message) => !usedMessages.has(message.id)).map((message) => ({ kind: 'message' as const, id: `m:${message.id}`, createdAt: message.createdAt, message })),
-    ...tools.filter((tool) => !usedTools.has(tool.id)).map((tool) => createFallbackToolTurn(tool)),
+  const fallbackEntries: OrderedTimelineEntry[] = [
+    ...messages.filter((message) => !usedMessages.has(message.id)).map((message) => ({ entry: { kind: 'message' as const, id: `m:${message.id}`, createdAt: message.createdAt, message }, eventId: message.eventId ?? Number.MAX_SAFE_INTEGER, phase: 0 })),
+    ...tools.filter((tool) => !usedTools.has(tool.id)).map((tool) => ({ entry: createFallbackToolTurn(tool), eventId: tool.eventId, phase: 1 })),
   ];
 
-  return [...entries, ...fallbackEntries].sort((left, right) => left.createdAt - right.createdAt);
+  return [...entries, ...fallbackEntries]
+    .sort((left, right) => left.eventId - right.eventId || left.phase - right.phase)
+    .map(({ entry }) => entry);
 }
 
 function projectSources(events: AgentEvent[], currentTask: ProjectedTaskGroup | undefined): ProjectedSource[] {
@@ -270,20 +275,20 @@ function createTaskAssistantTurn(group: ProjectedTaskGroup, tools: ProjectedTool
   const reasoningById = new Map<string, ProjectedReasoningRun>();
   const usedTools = new Set<string>();
   const usedReasoning = new Set<string>();
-  let textSegment: { id: string; createdAt: number; text: string } | undefined;
+  let textSegment: { id: string; createdAt: number; eventId: number; text: string } | undefined;
   let segmentIndex = 0;
   let sawAssistantText = false;
 
   const flushText = () => {
     if (!textSegment) return;
     const text = hideReasoningText(textSegment.text);
-    if (text.trim()) parts.push({ kind: 'text', id: `text:${textSegment.id}`, createdAt: textSegment.createdAt, message: { id: textSegment.id, role: 'assistant', text, createdAt: textSegment.createdAt, taskId: group.taskId } });
+    if (text.trim()) parts.push({ kind: 'text', id: `text:${textSegment.id}`, createdAt: textSegment.createdAt, message: { id: textSegment.id, role: 'assistant', text, createdAt: textSegment.createdAt, taskId: group.taskId, eventId: textSegment.eventId } });
     textSegment = undefined;
   };
 
   const appendText = (event: AgentEvent, text: string) => {
     if (!text) return;
-    textSegment ??= { id: `segment-${group.taskId}-${++segmentIndex}`, createdAt: event.createdAt, text: '' };
+    textSegment ??= { id: `segment-${group.taskId}-${++segmentIndex}`, createdAt: event.createdAt, eventId: event.id, text: '' };
     textSegment.text += text;
     sawAssistantText = true;
   };
@@ -327,7 +332,7 @@ function createTaskAssistantTurn(group: ProjectedTaskGroup, tools: ProjectedTool
   if (parts.length === 0 && group.status === 'failed') {
     const createdAt = group.terminal?.createdAt ?? group.started.createdAt;
     const text = group.error || 'Task failed.';
-    parts.push({ kind: 'text', id: `error:${group.taskId}`, createdAt, message: { id: `error:${group.taskId}`, role: 'assistant', text, createdAt, taskId: group.taskId } });
+    parts.push({ kind: 'text', id: `error:${group.taskId}`, createdAt, message: { id: `error:${group.taskId}`, role: 'assistant', text, createdAt, taskId: group.taskId, eventId: group.terminal?.id ?? group.started.id } });
   }
 
   if (parts.length === 0) return undefined;
@@ -349,7 +354,7 @@ function createFallbackToolTurn(tool: ProjectedToolRun): ProjectedTimelineEntry 
 
 function pushMessage(messages: ProjectedConversationMessage[], event: AgentEvent, role: ProjectedConversationMessage['role'] | undefined, text: string | undefined, taskId?: string): void {
   if (!role || !text) return;
-  messages.push({ id: `event-${event.id}`, role, text, createdAt: event.createdAt, taskId });
+  messages.push({ id: `event-${event.id}`, role, text, createdAt: event.createdAt, taskId, eventId: event.id });
 }
 
 function upsertStreamingMessage(
@@ -366,7 +371,7 @@ function upsertStreamingMessage(
   const taskId = readString(payload?.taskId);
   let message = streamingMessages.get(messageId);
   if (!message) {
-    message = { id: messageId, role, text: '', createdAt: event.createdAt, taskId };
+    message = { id: messageId, role, text: '', createdAt: event.createdAt, taskId, eventId: event.id };
     streamingMessages.set(messageId, message);
     messages.push(message);
   }
@@ -379,6 +384,12 @@ function partUpdatedAt(part: ProjectedAssistantTimelinePart) {
   if (part.kind === 'tool') return part.tool.updatedAt;
   if (part.kind === 'reasoning') return part.reasoning.updatedAt;
   return part.createdAt;
+}
+
+function timelinePartEventId(part: ProjectedAssistantTimelinePart) {
+  if (part.kind === 'tool') return part.tool.eventId;
+  if (part.kind === 'reasoning') return part.reasoning.eventId;
+  return part.message.eventId ?? Number.MAX_SAFE_INTEGER;
 }
 
 function reasoningForEvent(event: AgentEvent, items: Map<string, ProjectedReasoningRun>): ProjectedReasoningRun | undefined {
@@ -447,11 +458,7 @@ function isTerminalEvent(event: AgentEvent): boolean {
 }
 
 function sortEvents(events: AgentEvent[]): AgentEvent[] {
-  return [...events].sort(compareEventOrder);
-}
-
-function compareEventOrder(left: AgentEvent, right: AgentEvent): number {
-  return left.createdAt - right.createdAt || left.id - right.id;
+  return [...events].sort((left, right) => left.id - right.id);
 }
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {

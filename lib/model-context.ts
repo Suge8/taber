@@ -43,7 +43,7 @@ export function compactableTaskGroups(events: AgentEvent[], currentTaskId: strin
 }
 
 export function latestCompactionSummary(events: AgentEvent[]): CompactionSummary | undefined {
-  for (const event of [...events].sort((left, right) => right.createdAt - left.createdAt || right.id - left.id)) {
+  for (const event of [...events].sort((left, right) => right.id - left.id)) {
     if (event.type !== 'context.compacted') continue;
     const payload = readRecord(event.payload);
     const text = readString(payload?.text);

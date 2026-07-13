@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { compactableTaskGroups, deriveModelMessages, estimateModelPromptTokens, serializeToolEvidenceForContext } from '../lib/model-context.ts';
+import { compactableTaskGroups, deriveModelMessages, estimateModelPromptTokens, latestCompactionSummary, serializeToolEvidenceForContext } from '../lib/model-context.ts';
 import type { AgentEvent } from '../lib/db.ts';
 
 const events: AgentEvent[] = [
@@ -57,6 +57,17 @@ const compactedMessages = deriveModelMessages(compactedEvents, 'task-2');
 assert.equal(compactedMessages.length, 2);
 assert.match(String(compactedMessages[0].content), /<summary authority="model-generated">/);
 assert.doesNotMatch(String(compactedMessages[0].content), /data:image/);
+
+const clockRollbackCompactions = [
+  { ...event(20, 'context.compacted', { fromEventId: 1, toEventId: 10, text: 'older summary' }), createdAt: 2000 },
+  { ...event(22, 'context.compacted', { fromEventId: 1, toEventId: 12 }), createdAt: 500 },
+  { ...event(21, 'context.compacted', { fromEventId: 1, toEventId: 11, text: 'newer summary' }), createdAt: 1000 },
+  { ...event(23, 'task.started', { taskId: 'current', prompt: 'continue' }), createdAt: 400 },
+];
+assert.equal(latestCompactionSummary(clockRollbackCompactions)?.event.id, 21);
+const clockRollbackMessages = deriveModelMessages(clockRollbackCompactions, 'current');
+assert.match(String(clockRollbackMessages[0]?.content), /newer summary/);
+assert.doesNotMatch(String(clockRollbackMessages[0]?.content), /older summary/);
 
 const imageDigest = serializeToolEvidenceForContext(events[2]);
 assert(imageDigest);
