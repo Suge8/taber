@@ -325,6 +325,11 @@ assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'extract
 assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'extractImage', input: { source: 'viewport' }, output: { ok: true, source: 'viewport', width: 10, height: 20 } }, sidepanelMessages.zh, 'zh'), '截图 · 10×20');
 assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'debugger', input: { action: 'console' }, output: { logs: [{}, {}, {}] } }, sidepanelMessages.zh, 'zh'), '调试 · 3错');
 assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browserRepl', input: { code: 'return await observe()' }, output: { value: 1 } }, sidepanelMessages.zh, 'zh'), '检查');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'browserRepl', input: { code: 'const value = 1' }, output: { ok: false, code: 'NO_EVIDENCE', message: 'No evidence' } }, sidepanelMessages.zh, 'zh'), '未返回可用结果');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'open' }, output: { ok: false, code: 'TARGET_TAB_MISMATCH', message: 'Wrong tab' } }, sidepanelMessages.zh, 'zh'), '目标标签页不匹配');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'open' }, output: { ok: false, code: 'TARGET_NOT_OPERABLE', message: 'Restricted tab' } }, sidepanelMessages.zh, 'zh'), '目标标签页不可操作');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'open' }, output: { ok: false, code: 'NAVIGATION_FAILED', message: 'Network failed' } }, sidepanelMessages.zh, 'zh'), '页面跳转失败');
+assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', status: 'failed', input: { action: 'open' }, output: undefined, error: 'navigate.open is locked to target tab 7; received tabId 1.' }, sidepanelMessages.zh, 'zh'), '目标标签页不匹配');
 assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'listTabs' }, output: { action: 'listTabs', tabs: [{ id: 1 }, { id: 2 }] } }, sidepanelMessages.zh, 'zh'), '标签页 · 2 个');
 assert.equal(toolHeaderSummary({ ...recoverableSelectionTool, toolName: 'navigate', input: { action: 'switchTab', tabId: 7 }, output: { action: 'switchTab', tab: { id: 7, url: 'https://anpin.ai/dashboard' } } }, sidepanelMessages.zh, 'zh'), '切换 anpin.ai');
 

@@ -150,6 +150,7 @@ function toolErrorSummary(tool: ToolPresentationItem, labels: SidepanelMessages)
   const error = tool.error ?? '';
   if (/timeout|timed out/i.test(error)) return labels.tool.errors.timeout;
   if (/Element not found|Unknown element|selector/i.test(error)) return labels.tool.errors.elementNotFound;
+  if (/locked to target tab|Task is locked to target tab/i.test(error)) return labels.tool.errors.targetTabMismatch;
   if (/Navigation failed/i.test(error)) return labels.tool.errors.navigationFailed;
   if (/no readable text|returned no text/i.test(error)) return labels.tool.errors.noReadableText;
   if (/permission|access|denied/i.test(error)) return labels.tool.errors.accessLimited;
@@ -182,6 +183,10 @@ function recoverableErrorLabel(code: string, labels: SidepanelMessages) {
   if (code === 'DISABLED') return labels.tool.errors.targetDisabled;
   if (code === 'NOT_FILLABLE') return labels.tool.errors.targetNotFillable;
   if (code === 'ACTION_FAILED') return labels.tool.errors.actionFailed;
+  if (code === 'NO_EVIDENCE') return labels.tool.errors.noEvidence;
+  if (code === 'TARGET_TAB_MISMATCH') return labels.tool.errors.targetTabMismatch;
+  if (code === 'TARGET_NOT_OPERABLE') return labels.tool.errors.targetNotOperable;
+  if (code === 'NAVIGATION_FAILED') return labels.tool.errors.navigationFailed;
   return undefined;
 }
 
