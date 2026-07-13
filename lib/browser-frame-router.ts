@@ -66,18 +66,18 @@ class BrowserFrameRouter {
 
   private async executeMainAction(tabId: number, command: BrowserReplPageCommand, input: BrowserInput, abortSignal?: AbortSignal) {
     const result = await this.runFrameCommand(tabId, MAIN_FRAME_ID, command, abortSignal) as BrowserResult;
-    return shouldResnapshotAfterMainAction(result) ? this.withFreshState(tabId, input, result, abortSignal) : this.withRoutedMainState(tabId, result);
+    return shouldResnapshotAfterMainAction(result) ? this.withFreshState(tabId, command, input, result, abortSignal) : this.withRoutedMainState(tabId, result);
   }
 
   private async executeRefAction(tabId: number, command: BrowserReplPageCommand, input: BrowserInput, ref: string, abortSignal?: AbortSignal) {
     const routed = this.refs.get(ref);
-    if (!routed || routed.tabId !== tabId) return this.staleRef(tabId, input, STALE_REF_MESSAGE, abortSignal);
+    if (!routed || routed.tabId !== tabId) return this.staleRef(tabId, command, input, STALE_REF_MESSAGE, abortSignal);
     const frame = (await this.frames(tabId, abortSignal)).find((item) => item.frameId === routed.frameId);
-    if (!frame || frame.url !== routed.frameUrl) return this.staleRef(tabId, input, 'Ref is stale because the target frame changed. Use browser.snapshot again and retry with a new ref.', abortSignal);
+    if (!frame || frame.url !== routed.frameUrl) return this.staleRef(tabId, command, input, 'Ref is stale because the target frame changed. Use browser.snapshot again and retry with a new ref.', abortSignal);
     const nextInput = { ...input, target: { ref: routed.localRef } };
     const result = await this.runFrameCommand(tabId, routed.frameId, pageCommand(command, nextInput), abortSignal) as BrowserResult;
-    if (routed.frameId !== MAIN_FRAME_ID) return this.withFreshState(tabId, input, result, abortSignal);
-    return shouldResnapshotAfterMainAction(result) ? this.withFreshState(tabId, input, result, abortSignal) : this.withRoutedMainState(tabId, result);
+    if (routed.frameId !== MAIN_FRAME_ID) return this.withFreshState(tabId, command, input, result, abortSignal);
+    return shouldResnapshotAfterMainAction(result) ? this.withFreshState(tabId, command, input, result, abortSignal) : this.withRoutedMainState(tabId, result);
   }
 
   private async executeSemanticAction(tabId: number, command: BrowserReplPageCommand, input: BrowserInput, target: PageTarget, abortSignal?: AbortSignal) {
@@ -144,13 +144,13 @@ class BrowserFrameRouter {
     return { ...result, state };
   }
 
-  private async withFreshState(tabId: number, input: BrowserInput, result: BrowserResult, abortSignal?: AbortSignal) {
-    const snapshot = await this.snapshot(tabId, { helper: 'browser', args: [snapshotInput(input)], cancelKey: crypto.randomUUID(), timeoutMs: input.timeoutMs }, abortSignal).catch(() => undefined) as BrowserResult | undefined;
+  private async withFreshState(tabId: number, command: BrowserReplPageCommand, input: BrowserInput, result: BrowserResult, abortSignal?: AbortSignal) {
+    const snapshot = await this.snapshot(tabId, snapshotCommand(command, input), abortSignal).catch(() => undefined) as BrowserResult | undefined;
     return isRecord(snapshot?.state) ? { ...result, state: snapshot.state } : result;
   }
 
-  private async staleRef(tabId: number, input: BrowserInput, message: string, abortSignal?: AbortSignal) {
-    const snapshot = await this.snapshot(tabId, { helper: 'browser', args: [snapshotInput(input)], cancelKey: crypto.randomUUID(), timeoutMs: input.timeoutMs }, abortSignal).catch(() => undefined) as BrowserResult | undefined;
+  private async staleRef(tabId: number, command: BrowserReplPageCommand, input: BrowserInput, message: string, abortSignal?: AbortSignal) {
+    const snapshot = await this.snapshot(tabId, snapshotCommand(command, input), abortSignal).catch(() => undefined) as BrowserResult | undefined;
     return { ok: false, action: input.action, code: 'STALE_REF', message, ...(isRecord(snapshot?.state) ? { state: snapshot.state } : {}) };
   }
 
@@ -197,7 +197,11 @@ function readBrowserInput(command: BrowserReplPageCommand): BrowserInput {
 }
 
 function snapshotInput(input: BrowserInput): BrowserInput {
-  return { action: 'snapshot', ...(input.scope ? { scope: input.scope } : {}), ...(typeof input.limit === 'number' ? { limit: input.limit } : {}), ...(typeof input.timeoutMs === 'number' ? { timeoutMs: input.timeoutMs } : {}) };
+  return { action: 'snapshot', ...(input.scope ? { scope: input.scope } : {}), ...(typeof input.limit === 'number' ? { limit: input.limit } : {}) };
+}
+
+function snapshotCommand(command: BrowserReplPageCommand, input: BrowserInput): BrowserReplPageCommand {
+  return { helper: 'browser', args: [snapshotInput(input)], cancelKey: crypto.randomUUID(), timeoutMs: command.timeoutMs };
 }
 
 function pageCommand(command: BrowserReplPageCommand, input: BrowserInput): BrowserReplPageCommand {

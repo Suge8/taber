@@ -1,5 +1,3 @@
-import { MAX_BROWSER_REPL_TIMEOUT_MS } from './browser-repl-command.ts';
-
 export const DEFAULT_BROWSER_TOOL_TIMEOUT_MS = 5_000;
 export const MAX_BROWSER_SNAPSHOT_ELEMENTS = 80;
 
@@ -18,8 +16,6 @@ export type BrowserInput = {
   key?: string;
   scope?: 'viewport' | 'page';
   limit?: number;
-  tabId?: number;
-  timeoutMs?: number;
 };
 
 export type BrowserResult = {
@@ -61,7 +57,6 @@ export const browserInputJsonSchema = {
     key: { type: 'string', description: 'Keyboard key for action:"press", for example Enter.' },
     scope: { type: 'string', enum: ['viewport', 'page'], description: 'Snapshot element scope. Defaults to page; viewport returns currently visible elements first.' },
     limit: { type: 'integer', minimum: 1, maximum: MAX_BROWSER_SNAPSHOT_ELEMENTS, description: 'Maximum elements in returned state. Defaults to 30.' },
-    timeoutMs: { type: 'integer', minimum: 1, maximum: MAX_BROWSER_REPL_TIMEOUT_MS },
   },
 } as const;
 
@@ -69,8 +64,6 @@ export function parseBrowserInput(value: unknown): BrowserInput {
   if (!isRecord(value)) throw new Error('browser input must be an object');
   const action = readAction(value.action);
   const input: BrowserInput = { action };
-  if ('tabId' in value) input.tabId = readPositiveInteger(value.tabId, 'tabId');
-  if ('timeoutMs' in value) input.timeoutMs = readTimeout(value.timeoutMs);
   if ('scope' in value) input.scope = readScope(value.scope);
   if ('limit' in value) input.limit = readLimit(value.limit);
 
@@ -123,12 +116,6 @@ function readPageTarget(value: unknown, name: string): PageTarget {
 
 function readFilledString(value: unknown) {
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-function readTimeout(value: unknown) {
-  const timeout = readPositiveInteger(value, 'timeoutMs');
-  if (timeout > MAX_BROWSER_REPL_TIMEOUT_MS) throw new Error(`timeoutMs must be <= ${MAX_BROWSER_REPL_TIMEOUT_MS}`);
-  return timeout;
 }
 
 function readLimit(value: unknown) {
