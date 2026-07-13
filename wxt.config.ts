@@ -69,15 +69,14 @@ export default defineConfig({
       { resources: ['icons/icon-24.png'], matches: ['http://*/*', 'https://*/*'] },
     ],
     commands: {
-      'toggle-side-panel': {
+      _execute_action: {
         suggested_key: {
-          default: 'Alt+E',
-          mac: 'Command+E',
-          windows: 'Alt+E',
-          linux: 'Alt+E',
-          chromeos: 'Alt+E',
+          default: 'Ctrl+Shift+Y',
+          mac: 'Command+Shift+Y',
+          windows: 'Ctrl+Shift+Y',
+          linux: 'Ctrl+Shift+Y',
+          chromeos: 'Ctrl+Shift+Y',
         },
-        description: 'Open or close the Taber side panel',
       },
     },
     side_panel: { default_path: 'sidepanel.html' },
