@@ -5,10 +5,10 @@ export const extractImageRequestType = 'taber.extractImage.request';
 export type ExtractImageFormat = 'png' | 'jpeg';
 
 export type ExtractImageInput =
-  | { source: 'viewport'; tabId?: number; format?: ExtractImageFormat; jpegQuality?: number; selector?: never }
-  | { source: 'imageElement'; selector: string; tabId?: number }
-  | { source: 'canvas'; selector: string; tabId?: number; format?: ExtractImageFormat; jpegQuality?: number }
-  | { source: 'backgroundImage'; selector: string; tabId?: number };
+  | { source: 'viewport'; format?: ExtractImageFormat; jpegQuality?: number; selector?: never }
+  | { source: 'imageElement'; selector: string }
+  | { source: 'canvas'; selector: string; format?: ExtractImageFormat; jpegQuality?: number }
+  | { source: 'backgroundImage'; selector: string };
 
 type ExtractImageDataSuccess = {
   ok: true;
@@ -107,23 +107,19 @@ export function parseExtractImageInput(value: unknown): ExtractImageInput {
 }
 
 function readViewportInput(value: Record<string, unknown>): ExtractImageViewportInput {
-  return { source: 'viewport', ...readEncoding(value), ...readOptionalTabId(value) };
+  return { source: 'viewport', ...readEncoding(value) };
 }
 
 function readImageElementInput(value: Record<string, unknown>): Extract<ExtractImageInput, { source: 'imageElement' }> {
-  return { source: 'imageElement', selector: readSelector(value, 'imageElement'), ...readOptionalTabId(value) };
+  return { source: 'imageElement', selector: readSelector(value, 'imageElement') };
 }
 
 function readCanvasInput(value: Record<string, unknown>): Extract<ExtractImageInput, { source: 'canvas' }> {
-  return { source: 'canvas', selector: readSelector(value, 'canvas'), ...readEncoding(value), ...readOptionalTabId(value) };
+  return { source: 'canvas', selector: readSelector(value, 'canvas'), ...readEncoding(value) };
 }
 
 function readBackgroundImageInput(value: Record<string, unknown>): Extract<ExtractImageInput, { source: 'backgroundImage' }> {
-  return { source: 'backgroundImage', selector: readSelector(value, 'backgroundImage'), ...readOptionalTabId(value) };
-}
-
-function readOptionalTabId(value: Record<string, unknown>): { tabId?: number } {
-  return 'tabId' in value ? { tabId: readPositiveInteger(value.tabId, 'tabId') } : {};
+  return { source: 'backgroundImage', selector: readSelector(value, 'backgroundImage') };
 }
 
 function readEncoding(value: Record<string, unknown>): { format?: ExtractImageFormat; jpegQuality?: number } {
@@ -158,7 +154,7 @@ export function createExtractImageController(options: {
         ...(captured.width && captured.height ? { width: captured.width, height: captured.height } : {}),
       };
     }
-    const tabId = input.tabId ?? (await options.getCurrentTabId());
+    const tabId = await options.getCurrentTabId();
     try {
       return requireExtractImageResult(await options.executeInTab(tabId, input));
     } catch (error) {
