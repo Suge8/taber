@@ -97,7 +97,7 @@ export type AgentEventProjection = {
 
 export function projectAgentEvents(events: AgentEvent[]): AgentEventProjection {
   const orderedEvents = sortEvents(events);
-  const taskGroups = projectTaskGroups(orderedEvents);
+  const taskGroups = projectOrderedTaskGroups(orderedEvents);
   const currentTask = currentTaskGroup(orderedEvents, taskGroups);
   const conversation = projectConversation(orderedEvents);
   const tools = projectToolTimeline(orderedEvents);
@@ -114,9 +114,13 @@ export function projectAgentEvents(events: AgentEvent[]): AgentEventProjection {
 }
 
 export function projectTaskGroups(events: AgentEvent[], afterEventId = 0): ProjectedTaskGroup[] {
+  return projectOrderedTaskGroups(sortEvents(events), afterEventId);
+}
+
+function projectOrderedTaskGroups(events: AgentEvent[], afterEventId = 0): ProjectedTaskGroup[] {
   const groups: ProjectedTaskGroup[] = [];
   let current: ProjectedTaskGroup | undefined;
-  for (const event of sortEvents(events)) {
+  for (const event of events) {
     if (event.id <= afterEventId || event.type === 'context.compacted') continue;
     const payload = readRecord(event.payload);
     if (event.type === 'task.started') {
@@ -195,6 +199,7 @@ function projectTimeline(taskGroups: ProjectedTaskGroup[], messages: ProjectedCo
   const entries: OrderedTimelineEntry[] = [];
   const usedMessages = new Set<string>();
   const usedTools = new Set<string>();
+  const toolsByTaskId = groupToolsByTaskId(taskGroups, tools);
 
   for (const group of taskGroups) {
     if (group.prompt) {
@@ -203,9 +208,7 @@ function projectTimeline(taskGroups: ProjectedTaskGroup[], messages: ProjectedCo
       usedMessages.add(message.id);
     }
 
-    const taskEventIds = new Set(group.events.map((event) => event.id));
-    const taskTools = tools.filter((tool) => tool.taskId === group.taskId || taskEventIds.has(tool.eventId));
-    const turn = createTaskAssistantTurn(group, taskTools, usedMessages);
+    const turn = createTaskAssistantTurn(group, toolsByTaskId.get(group.taskId) ?? [], usedMessages);
     if (turn) {
       entries.push({ entry: { kind: 'assistantTurn', id: `a:${turn.id}`, createdAt: turn.createdAt, turn }, eventId: Math.min(...turn.parts.map(timelinePartEventId)), phase: 1 });
       for (const part of turn.parts) if (part.kind === 'tool') usedTools.add(part.tool.id);
@@ -220,6 +223,23 @@ function projectTimeline(taskGroups: ProjectedTaskGroup[], messages: ProjectedCo
   return [...entries, ...fallbackEntries]
     .sort((left, right) => left.eventId - right.eventId || left.phase - right.phase)
     .map(({ entry }) => entry);
+}
+
+function groupToolsByTaskId(taskGroups: ProjectedTaskGroup[], tools: ProjectedToolRun[]) {
+  const taskIdByEventId = new Map<number, string>();
+  for (const group of taskGroups) {
+    for (const event of group.events) taskIdByEventId.set(event.id, group.taskId);
+  }
+  const grouped = new Map<string, ProjectedToolRun[]>();
+  for (const tool of tools) {
+    for (const taskId of new Set([tool.taskId, taskIdByEventId.get(tool.eventId)])) {
+      if (!taskId) continue;
+      const taskTools = grouped.get(taskId) ?? [];
+      taskTools.push(tool);
+      grouped.set(taskId, taskTools);
+    }
+  }
+  return grouped;
 }
 
 function projectSources(events: AgentEvent[], currentTask: ProjectedTaskGroup | undefined): ProjectedSource[] {

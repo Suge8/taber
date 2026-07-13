@@ -432,4 +432,23 @@ assert.equal(clockRollbackTimeline[0]?.kind === 'message' ? clockRollbackTimelin
 assert.equal(clockRollbackTimeline[1]?.kind === 'assistantTurn' ? clockRollbackTimeline[1].turn.status : '', 'completed');
 assert.deepEqual(clockRollbackTimeline[1]?.kind === 'assistantTurn' ? clockRollbackTimeline[1].turn.parts.map((part) => part.kind) : [], ['tool', 'text']);
 
+const indexedToolProjection = projectAgentEvents([
+  { id: 1, sessionId: 1, type: 'tool.started', payload: { toolCallId: 'first', toolName: 'navigate', input: { step: 1 } }, createdAt: 1 },
+  { id: 2, sessionId: 1, type: 'tool.started', payload: { toolCallId: 'second', toolName: 'navigate', input: { step: 2 } }, createdAt: 2 },
+  { id: 3, sessionId: 1, type: 'tool.completed', payload: { toolCallId: 'first', toolName: 'navigate', output: { step: 1 } }, createdAt: 3 },
+  { id: 4, sessionId: 1, type: 'tool.failed', payload: { toolCallId: 'second', toolName: 'navigate', error: 'second failed' }, createdAt: 4 },
+  { id: 5, sessionId: 1, type: 'tool.started', payload: { toolName: 'getDocument', input: { sequence: 1 } }, createdAt: 5 },
+  { id: 6, sessionId: 1, type: 'tool.completed', payload: { toolName: 'getDocument', output: { sequence: 1 } }, createdAt: 6 },
+  { id: 7, sessionId: 1, type: 'tool.started', payload: { toolName: 'getDocument', input: { sequence: 2 } }, createdAt: 7 },
+  { id: 8, sessionId: 1, type: 'tool.completed', payload: { toolName: 'getDocument', output: { sequence: 2 } }, createdAt: 8 },
+  { id: 9, sessionId: 1, type: 'tool.completed', payload: { toolName: 'extractImage', output: { orphan: true } }, createdAt: 9 },
+]);
+assert.deepEqual(indexedToolProjection.tools.map((tool) => [tool.id, tool.toolName, tool.status, tool.output]), [
+  ['tool-first', 'navigate', 'completed', { step: 1 }],
+  ['tool-second', 'navigate', 'failed', undefined],
+  ['event-5', 'getDocument', 'completed', { sequence: 1 }],
+  ['event-7', 'getDocument', 'completed', { sequence: 2 }],
+  ['event-9', 'extractImage', 'completed', { orphan: true }],
+]);
+
 console.log('sidepanel view tests passed');
