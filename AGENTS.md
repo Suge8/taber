@@ -50,4 +50,5 @@ Dexie               单一本地数据源，保存配置、会话、事件日志
 - 会话日志诊断（导出 / CDP dump）：`docs/debugging.md`、`lib/session-export.ts`、`scripts/dump-session-events.ts`
 - 确定性 E2E 场景（含 5 条 MVP 任务事实源）：`pnpm run test:e2e`（`scripts/test-e2e-scenarios.ts`）
 - 完整 CI：`pnpm run test:ci`
+- 发版前全量门禁（完整 CI + extension / browser-repl / sidepanel 三项必跑 smoke；隔离产物 `.output/chrome-mv3-runtime`）：`pnpm run test:ci:full`
 - 可选运行时浏览器冒烟测试：`pnpm run test:ci:runtime`
