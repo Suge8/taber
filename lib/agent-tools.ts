@@ -2,7 +2,7 @@ import { jsonSchema, tool } from 'ai';
 import { appendToolRun } from './db.ts';
 import { DEFAULT_BROWSER_TOOL_TIMEOUT_MS, browserDescription, browserInputJsonSchema, parseBrowserInput, type BrowserInput, type BrowserResult } from './browser-tool.ts';
 import { isPageAccessError, pageAccessErrorMessage } from './browser-access.ts';
-import { browserReplToolHelperNames, createBrowserReplController, createBrowserReplInputJsonSchema, parseBrowserReplInput, type BrowserReplInput, type BrowserReplResult } from './browser-repl.ts';
+import { browserReplToolHelperNames, createBrowserReplController, createBrowserReplInputJsonSchema, parseBrowserReplInput, type BrowserReplInput, type BrowserReplResult, type BrowserReplSuccess } from './browser-repl.ts';
 import { runBrowserReplInSandbox } from './browser-repl-sandbox.ts';
 import { createBrowserReplPageExecutor } from './browser-repl-executor.ts';
 import { extractImageToModelOutput } from './agent-tool-image-output.ts';
@@ -16,7 +16,14 @@ import { readSessionFile, writeSessionFile } from './workspace-files.ts';
 import { DEBUGGER_ENABLED } from './runtime-flags.ts';
 
 type SendMessage = (message: unknown) => Promise<unknown>;
-type NavigateToolResult = NavigateResult & { availableSkills?: string[] };
+type NavigateToolFailure = {
+  ok: false;
+  action: NavigateInput['action'];
+  code: 'TARGET_TAB_MISMATCH' | 'TARGET_NOT_OPERABLE' | 'NAVIGATION_FAILED';
+  message: string;
+  retryHint: string;
+};
+type NavigateToolResult = (NavigateResult & { availableSkills?: string[] }) | NavigateToolFailure;
 type EmitEvent = (type: string, payload: unknown) => Promise<void>;
 type RunSandbox = typeof runBrowserReplInSandbox;
 type TargetChangeReason = 'openNew' | 'switchTab';
@@ -38,9 +45,11 @@ type AgentToolOptions = {
   browserJsEnabled?: boolean;
 };
 
+export const AGENT_TOOL_SCHEMA_VERSION = 2;
+
 const getDocumentDescription = 'Read webpage, PDF, or workspace file as structured content. Long content is saved to /workspace and the result carries a preview plus savedTo; read the file for the rest. Use when you need article text, page content, selection, or tables. Fetch-first: for public/static URLs prefer source:"url" (fetches the page or PDF directly, no tab, fast, parallelizable); use source:"currentPage" when content needs login, JS rendering, or the controlled tab. For currentPage: mode:"article" extracts main content, mode:"page" gets full text, mode:"selection" reads user selection. source:"file" reads an uploaded or generated /workspace file (pdf, docx, or text) as text. Results include open shadow root text and same-origin iframe content; cross-origin iframes show metadata with access hints.';
 const extractImageDescription = 'Capture screenshots or extract images. Use source:"viewport" for visible area, source:"imageElement" for <img> URLs, source:"canvas" for canvas pixels, source:"backgroundImage" for CSS backgrounds. Viewport results include width/height: the viewport size in CSS px, the coordinate space for browser { x, y } targets (scale screenshot pixel coords by width/imageWidth). Viewport uses the controlled target; Chrome may briefly activate it to capture even when the task runs in background.';
-const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Use for all navigation. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly. navigation.status:"timeout" means the load event did not fire in time but the page is often already usable: check tab.url and continue with browser snapshot instead of retrying the same navigation.';
+const navigateDescription = 'Navigate tabs: open URLs, back/forward, reload, list/switch/close tabs, or read current tab. Current target is implicit: only switchTab and closeTab take tabId; omit unused fields. Changes target only on action:"switchTab" or open target:"new". Never use page location/history directly. navigation.status:"timeout" means the load event did not fire in time but the page is often already usable: check tab.url and continue with browser snapshot instead of retrying the same navigation.';
 const debuggerDescription = 'Debug-build only: read console, network, failed requests, accessibility snapshots, main-world JS state, or raw CDP. Use for diagnosing console errors, network failures, and accessibility issues. Cookies are blocked.';
 const fsDescription = 'Session file workspace and site skills. ls lists /workspace (uploads and outputs) and /skills (stored site knowledge). read returns file text. write saves text files (.md/.txt/.html/.csv/.json) or converts Markdown to Word (.docx); for PDF output write .md or .html and tell the user to export it from the sidebar. /skills/*.md files are reusable prior knowledge about sites: read matching skills before blind exploration; they are priors, live page state wins. After a task where you discovered a non-obvious reusable site flow or pitfall, write a concise skill file. Never store secrets or personal data.';
 
@@ -66,6 +75,7 @@ function browserReplDescription(browserJsEnabled: boolean) {
   return (
     'Advanced REPL for operations browser cannot express. ' +
     'Use only for batch actions, complex forms, debugging, or when browser fails. ' +
+    'Single expressions return automatically; multi-statement code must return evidence. ' +
     `Helpers: ${helpers}.${browserJsNote} ` +
     'Page reading: readVisibleText(), readLinksAndButtons(), listInteractiveElements(), queryText("text") cover main document, open shadow roots, and same-origin iframes; cross-origin frames show metadata. ' +
     'Element indexes from observe/query are scoped to one call; never reuse across calls. ' +
@@ -192,7 +202,6 @@ class AgentToolRuntime {
   }
 
   async getDocument(input: GetDocumentInput, abortSignal?: AbortSignal) {
-    if (input.source === 'currentPage' && input.tabId !== undefined) this.assertInputTabId('getDocument', input.tabId);
     const result = await createGetDocumentController({
       getCurrentTabId: () => this.getCurrentTabId(),
       executeInTab: (tabId, nextInput) => this.extractPageDocument(tabId, nextInput, abortSignal),
@@ -211,7 +220,6 @@ class AgentToolRuntime {
   }
 
   extractImage(input: ExtractImageInput, abortSignal?: AbortSignal) {
-    if (input.tabId !== undefined) this.assertInputTabId('extractImage', input.tabId);
     return createExtractImageController({
       getCurrentTabId: () => this.getCurrentTabId(),
       captureVisibleTab: (nextInput) => this.captureVisibleTab(nextInput, abortSignal),
@@ -219,16 +227,20 @@ class AgentToolRuntime {
     }).run(input);
   }
 
-  async navigate(input: NavigateInput, abortSignal?: AbortSignal) {
-    this.assertNavigateTabId(input);
+  async navigate(input: NavigateInput, abortSignal?: AbortSignal): Promise<NavigateToolResult> {
+    const mismatch = this.navigateTargetMismatch(input);
+    if (mismatch) return mismatch;
     const response = await abortable(() => this.sendMessage({ type: navigateRequestType, input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
-    if (isRecord(response) && typeof response.error === 'string') throw await this.errorFromResponse(response.error);
+    if (isRecord(response) && typeof response.error === 'string') {
+      if (isTargetUnavailableMessage(response.error)) throw await this.targetUnavailableError(response.error);
+      return navigateFailure(input.action, response.error);
+    }
     const result = response as NavigateResult;
     await this.applyNavigateTargetChange(input, result);
-    return this.withAvailableSkills(input, result);
+    return this.withAvailableSkills(result);
   }
 
-  private async withAvailableSkills(_input: NavigateInput, result: NavigateResult): Promise<NavigateToolResult> {
+  private async withAvailableSkills(result: NavigateResult): Promise<NavigateToolResult> {
     const paths = await this.skillsForHostChange(result.tab?.url ?? result.navigation?.url);
     return paths ? { ...result, availableSkills: paths } : result;
   }
@@ -253,9 +265,9 @@ class AgentToolRuntime {
   }
 
   async browser(input: BrowserInput, abortSignal?: AbortSignal) {
-    if (input.tabId !== undefined) this.assertInputTabId('browser', input.tabId);
-    const tabId = input.tabId ?? (await this.getCurrentTabId());
-    const result = await this.pageExecutor.executePageCommand(tabId, { helper: 'browser', args: [input], cancelKey: crypto.randomUUID(), timeoutMs: input.timeoutMs ?? DEFAULT_BROWSER_TOOL_TIMEOUT_MS }, abortSignal) as BrowserResult;
+    const canonicalInput = parseBrowserInput(input);
+    const tabId = await this.getCurrentTabId();
+    const result = await this.pageExecutor.executePageCommand(tabId, { helper: 'browser', args: [canonicalInput], cancelKey: crypto.randomUUID(), timeoutMs: DEFAULT_BROWSER_TOOL_TIMEOUT_MS }, abortSignal) as BrowserResult;
     return this.withPageHostSkills(result);
   }
 
@@ -267,7 +279,6 @@ class AgentToolRuntime {
   }
 
   async browserRepl(input: BrowserReplInput, abortSignal?: AbortSignal) {
-    if (input.tabId !== undefined) this.assertInputTabId('browserRepl', input.tabId);
     const result = await createBrowserReplController({
       getCurrentTabId: () => this.getCurrentTabId(),
       executePageCommand: (tabId, command, nextSignal) => this.pageExecutor.executePageCommand(tabId, command, nextSignal),
@@ -282,8 +293,8 @@ class AgentToolRuntime {
   }
 
   async debugger(input: DebuggerInput, abortSignal?: AbortSignal) {
-    if (input.tabId !== undefined) this.assertInputTabId('debugger', input.tabId);
-    const response = await abortable(() => this.sendMessage({ type: debuggerRequestType, input, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
+    const canonicalInput = parseDebuggerInput(input);
+    const response = await abortable(() => this.sendMessage({ type: debuggerRequestType, input: canonicalInput, windowId: this.windowId, targetTabId: this.currentTargetTabId() }), abortSignal);
     if (isRecord(response) && typeof response.error === 'string') throw await this.errorFromResponse(response.error);
     return response as DebuggerResult;
   }
@@ -317,15 +328,17 @@ class AgentToolRuntime {
     return response as ExtractImageResult;
   }
 
-  private assertInputTabId(toolName: string, tabId: number) {
+  private navigateTargetMismatch(input: NavigateInput): NavigateToolFailure | undefined {
+    if (input.action !== 'closeTab') return undefined;
     const targetTabId = this.currentTargetTabId();
-    if (targetTabId === undefined || tabId === targetTabId) return;
-    throw new Error(`${toolName} is locked to target tab ${targetTabId}; received tabId ${tabId}. Use navigate.switchTab to change the task target.`);
-  }
-
-  private assertNavigateTabId(input: NavigateInput) {
-    if (input.tabId === undefined || input.action === 'switchTab') return;
-    this.assertInputTabId(`navigate.${input.action}`, input.tabId);
+    if (targetTabId === undefined || input.tabId === targetTabId) return undefined;
+    return {
+      ok: false,
+      action: input.action,
+      code: 'TARGET_TAB_MISMATCH',
+      message: `navigate.closeTab is locked to target tab ${targetTabId}; received tabId ${input.tabId}.`,
+      retryHint: 'Use navigate.switchTab to change the task target, or close the current target tab.',
+    };
   }
 
   private async applyNavigateTargetChange(input: NavigateInput, result: NavigateResult) {
@@ -361,6 +374,34 @@ class AgentToolRuntime {
   }
 }
 
+function navigateFailure(action: NavigateInput['action'], message: string): NavigateToolFailure {
+  if (/locked to target tab|Task is locked to target tab/i.test(message)) {
+    return {
+      ok: false,
+      action,
+      code: 'TARGET_TAB_MISMATCH',
+      message,
+      retryHint: 'Use navigate.switchTab to change the task target, or omit tabId when the current target is intended.',
+    };
+  }
+  if (/not operable/i.test(message)) {
+    return {
+      ok: false,
+      action,
+      code: 'TARGET_NOT_OPERABLE',
+      message,
+      retryHint: 'Use navigate.listTabs and switch to an operable http/https tab, or open the URL in the current target.',
+    };
+  }
+  return {
+    ok: false,
+    action,
+    code: 'NAVIGATION_FAILED',
+    message,
+    retryHint: 'Inspect navigate.currentTab before retrying; if the URL did not change, use a different URL or report the failure.',
+  };
+}
+
 // Context economy: oversized document content is spilled to /workspace so the
 // model context and event log only carry a preview plus a stable file path.
 export const DOCUMENT_SPILL_THRESHOLD_CHARS = 12_000;
@@ -390,7 +431,8 @@ export async function spillLargeDocumentContent(
 export async function spillLargeReplValue(
   result: BrowserReplResult,
   writeFile: (name: string, data: ArrayBuffer) => Promise<void>,
-): Promise<BrowserReplResult | (Omit<BrowserReplResult, 'value'> & { value: string; truncated: true; valueChars: number; savedTo: string; hint: string })> {
+): Promise<BrowserReplResult | (Omit<BrowserReplSuccess, 'value'> & { value: string; truncated: true; valueChars: number; savedTo: string; hint: string })> {
+  if (!('value' in result)) return result;
   let serialized: string;
   try {
     serialized = JSON.stringify(result.value);
