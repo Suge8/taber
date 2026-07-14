@@ -1172,6 +1172,15 @@ async function runWorkspaceFilesPhase(cdp) {
   if (!seededFiles.some((file) => file.sessionId === 2 && file.name === 'initial-workspace.md')) throw new Error(`workspace file fixture missing: ${JSON.stringify(seededFiles)}`);
   await evaluateStable(cdp, waitForTextExpression('initial-workspace.md'));
 
+  const liveMutation = await createLiveWorkspaceMutation(cdp);
+  let liveMutationDisplayed;
+  try {
+    await broadcastAgentEventFromExtensionPage(liveMutation.event);
+    liveMutationDisplayed = await waitForWorkspaceFile(cdp, 'live-workspace.md');
+  } finally {
+    await removeLiveWorkspaceMutation(cdp, liveMutation);
+  }
+
   await openHistory(cdp);
   await selectHistoryItem(cdp, 'Older session', ['2', '1']);
   await waitForSessionView(cdp, '1');
@@ -1184,7 +1193,79 @@ async function runWorkspaceFilesPhase(cdp) {
   await waitForSessionView(cdp, '2');
   const returnedSessionFiles = await evaluate(cdp, `document.body.innerText.includes('initial-workspace.md') && !document.body.innerText.includes('older-workspace.md')`);
 
-  return { initialFileDisplayed: true, switchedSessionFiles, deletedThroughUi, returnedSessionFiles };
+  return { initialFileDisplayed: true, liveMutationDisplayed, switchedSessionFiles, deletedThroughUi, returnedSessionFiles };
+}
+
+function createLiveWorkspaceMutation(cdp) {
+  return evaluate(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['files', 'agentEvents'], 'readwrite');
+      const now = Date.now();
+      const data = new TextEncoder().encode('live file').buffer;
+      const fileRequest = tx.objectStore('files').add({ sessionId: 2, name: 'live-workspace.md', mimeType: 'text/markdown', data, size: data.byteLength, createdAt: now, updatedAt: now });
+      const event = {
+        sessionId: 2,
+        type: 'tool.completed',
+        payload: { taskId: 'workspace-live-smoke', toolCallId: 'workspace-live-write', toolName: 'fs', output: { action: 'write', path: '/workspace/live-workspace.md' } },
+        createdAt: now,
+      };
+      const eventRequest = tx.objectStore('agentEvents').add(event);
+      tx.oncomplete = () => {
+        db.close();
+        resolve({ fileId: Number(fileRequest.result), event: { id: Number(eventRequest.result), ...event } });
+      };
+      tx.onerror = () => { const error = tx.error; db.close(); reject(error); };
+    };
+  })`);
+}
+
+async function broadcastAgentEventFromExtensionPage(event) {
+  const url = `chrome-extension://${runtime.extensionId}/print.html?file=0`;
+  const target = await browserCdp.send('Target.createTarget', { url });
+  let senderCdp;
+  try {
+    const page = await waitForTarget(runtime.cdpOrigin, (candidate) => candidate.id === target.targetId && candidate.url === url && hasCdpEndpoint(candidate), 15_000);
+    senderCdp = await connectTarget(page);
+    await senderCdp.send('Runtime.enable');
+    await evaluateStable(senderCdp, `chrome.runtime.sendMessage(${JSON.stringify({ type: 'taber.agent.event', event })})`);
+  } finally {
+    senderCdp?.close();
+    await browserCdp.send('Target.closeTarget', { targetId: target.targetId }).catch(() => undefined);
+  }
+}
+
+function removeLiveWorkspaceMutation(cdp, mutation) {
+  return evaluate(cdp, `new Promise((resolve, reject) => {
+    const open = indexedDB.open('taber');
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction(['files', 'agentEvents'], 'readwrite');
+      tx.objectStore('files').delete(${mutation.fileId});
+      tx.objectStore('agentEvents').delete(${mutation.event.id});
+      tx.oncomplete = () => { db.close(); resolve(true); };
+      tx.onerror = () => { const error = tx.error; db.close(); reject(error); };
+    };
+  })`);
+}
+
+function waitForWorkspaceFile(cdp, fileName) {
+  return evaluateStable(cdp, `new Promise((resolve, reject) => {
+    const displayed = () => [...document.querySelectorAll('section[aria-label="Files"] button')]
+      .some((button) => button.textContent.includes(${JSON.stringify(fileName)}));
+    if (displayed()) { resolve(true); return; }
+    const timeout = setTimeout(() => { observer.disconnect(); reject(new Error('workspace file did not render: ' + ${JSON.stringify(fileName)})); }, 5000);
+    const observer = new MutationObserver(() => {
+      if (!displayed()) return;
+      clearTimeout(timeout);
+      observer.disconnect();
+      resolve(true);
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  })`);
 }
 
 function readWorkspaceFiles(cdp) {
