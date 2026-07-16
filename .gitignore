@@ -27,3 +27,10 @@ scripts/_qc-temp.mjs
 .env
 .env.*
 !.env.example
+
+# promo pipeline: regenerable intermediates and heavy sources stay local
+design/promo/shots/raw/
+design/promo/visual/*.png
+design/promo/motion/*.mov
+design/promo/motion/*.gif
+design/promo/compose/.tmp/
