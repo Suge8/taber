@@ -626,7 +626,7 @@ html.js .doc-outer.in { opacity: 1; }
         </h1>
         <p class="hero-sub" data-i18n="hero.sub">Give Taber a task in plain words. It reads pages, clicks buttons, fills forms, and hands you the result. Watch every step. Stop it any time.</p>
         <div class="hero-ctas">
-          <a class="btn btn-primary btn-lg js-dl" href="https://github.com/Suge8/taber/releases/latest" target="_blank" rel="noopener">
+          <a class="btn btn-primary btn-lg" href="#get">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
             <span data-i18n="hero.cta1">Download Taber</span>
           </a>
@@ -804,14 +804,13 @@ html.js .doc-outer.in { opacity: 1; }
     <div class="container install-grid">
       <div class="install-copy">
         <h2 class="sec-title rv" data-i18n="install.title">Up and running in a minute</h2>
-        <p class="sec-lede rv" style="--i:1" data-i18n="install.lede">Download the packed extension and drop it into Chrome. No account, no setup wizard.</p>
-        <div class="rv" style="--i:2; margin-top:2.2rem">
+        <div class="rv" style="--i:1; margin-top:2.2rem">
           <a class="btn btn-primary btn-lg js-dl" href="https://github.com/Suge8/taber/releases/latest" target="_blank" rel="noopener">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>
             <span data-i18n="install.dl">Download Taber for Chrome</span>
           </a>
         </div>
-        <p class="install-note rv" style="--i:3" data-i18n="install.note">Open source, Apache-2.0. To update later, download and replace.</p>
+        <p class="install-note rv" style="--i:2" data-i18n="install.note">Open source, Apache-2.0. To update later, download and replace.</p>
         <div class="folder-outer" id="folderOuter" aria-hidden="true"><img class="folder-3d" src="assets/folder-3d.webp" alt="" width="560" height="500"></div>
       </div>
       <ol class="install-steps">
@@ -819,7 +818,7 @@ html.js .doc-outer.in { opacity: 1; }
           <span class="step-num">1</span>
           <div class="step-text">
             <h3 data-i18n="install.s1t">Download and unzip</h3>
-            <p data-i18n="install.s1d">Grab the latest build and unzip it anywhere.</p>
+            <p data-i18n="install.s1d">Unzip the package anywhere</p>
           </div>
           <span class="step-vis" aria-hidden="true">
             <span class="vis-zip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/></svg>taber-chrome-mv3.zip</span>
@@ -829,7 +828,7 @@ html.js .doc-outer.in { opacity: 1; }
           <span class="step-num">2</span>
           <div class="step-text">
             <h3 data-i18n="install.s2t">Turn on Developer mode</h3>
-            <p data-i18n="install.s2d">Open chrome://extensions and flip the Developer mode switch, top right.</p>
+            <p data-i18n="install.s2d">Open chrome://extensions and flip the Developer mode switch, top right</p>
           </div>
           <span class="step-vis step-vis-col" aria-hidden="true">
             <span class="vis-url">chrome://extensions</span>
@@ -840,7 +839,7 @@ html.js .doc-outer.in { opacity: 1; }
           <span class="step-num">3</span>
           <div class="step-text">
             <h3 data-i18n="install.s3t">Drag in the folder</h3>
-            <p data-i18n="install.s3d">Drop the unzipped folder onto the page. Taber shows up in your side panel.</p>
+            <p data-i18n="install.s3d">Drop the unzipped folder onto the page. Taber shows up in your side panel</p>
           </div>
           <span class="step-vis" aria-hidden="true">
             <span class="vis-drop">
@@ -915,12 +914,11 @@ html.js .doc-outer.in { opacity: 1; }
       'hood.label': 'Under the hood',
       'hood.note': 'Six fixed tools, narrow by design. Light and dark themes included, follows your system.',
       'install.title': 'Up and running in a minute',
-      'install.lede': 'Download the packed extension and drop it into Chrome. No account, no setup wizard.',
       'install.dl': 'Download Taber for Chrome',
       'install.note': 'Open source, Apache-2.0. To update later, download and replace.',
-      'install.s1t': 'Download and unzip', 'install.s1d': 'Grab the latest build and unzip it anywhere.',
-      'install.s2t': 'Turn on Developer mode', 'install.s2d': 'Open chrome://extensions and flip the Developer mode switch, top right.',
-      'install.s3t': 'Drag in the folder', 'install.s3d': 'Drop the unzipped folder onto the page. Taber shows up in your side panel.',
+      'install.s1t': 'Download and unzip', 'install.s1d': 'Unzip the package anywhere',
+      'install.s2t': 'Turn on Developer mode', 'install.s2d': 'Open chrome://extensions and flip the Developer mode switch, top right',
+      'install.s3t': 'Drag in the folder', 'install.s3d': 'Drop the unzipped folder onto the page. Taber shows up in your side panel',
       'footer.tag': 'A browser agent that acts.',
       'footer.copy': '\u00a9 2025 Taber contributors \u00b7 Sessions, files, and skills never leave your machine.'
     },
@@ -963,12 +961,11 @@ html.js .doc-outer.in { opacity: 1; }
       'hood.label': '\u5e95\u5c42\u4e00\u89c8',
       'hood.note': '\u516d\u4e2a\u56fa\u5b9a\u5de5\u5177\uff0c\u523b\u610f\u6536\u7a84\u624d\u53ef\u4fe1\u3002\u6d45\u8272\u6df1\u8272\u4e3b\u9898\u90fd\u6709\uff0c\u8ddf\u968f\u7cfb\u7edf\u3002',
       'install.title': '\u88c5\u4e0a\u5c31\u80fd\u7528',
-      'install.lede': '\u4e0b\u8f7d\u6253\u5305\u597d\u7684\u6269\u5c55\uff0c\u4e09\u6b65\u88c5\u8fdb Chrome\u3002\u4e0d\u7528\u8d26\u53f7\uff0c\u4e0d\u7528\u914d\u7f6e\u73af\u5883\u3002',
       'install.dl': '\u4e0b\u8f7d Taber for Chrome',
       'install.note': '\u5f00\u6e90 Apache-2.0\u3002\u4ee5\u540e\u66f4\u65b0\uff0c\u91cd\u65b0\u4e0b\u8f7d\u66ff\u6362\u5373\u53ef\u3002',
-      'install.s1t': '\u4e0b\u8f7d\u5e76\u89e3\u538b', 'install.s1d': '\u62ff\u5230\u6700\u65b0\u6784\u5efa\u5305\uff0c\u89e3\u538b\u5230\u4efb\u610f\u4f4d\u7f6e\u3002',
-      'install.s2t': '\u6253\u5f00\u5f00\u53d1\u8005\u6a21\u5f0f', 'install.s2d': '\u5730\u5740\u680f\u8f93\u5165 chrome://extensions\uff0c\u6253\u5f00\u53f3\u4e0a\u89d2\u7684\u300c\u5f00\u53d1\u8005\u6a21\u5f0f\u300d\u3002',
-      'install.s3t': '\u62d6\u5165\u6587\u4ef6\u5939', 'install.s3d': '\u628a\u89e3\u538b\u51fa\u6765\u7684\u6587\u4ef6\u5939\u62d6\u8fdb\u9875\u9762\uff0cTaber \u5c31\u4f1a\u51fa\u73b0\u5728\u4fa7\u8fb9\u680f\u3002',
+      'install.s1t': '\u4e0b\u8f7d\u5e76\u89e3\u538b', 'install.s1d': '\u5c06\u538b\u7f29\u5305\u89e3\u538b\u5230\u4efb\u610f\u4f4d\u7f6e',
+      'install.s2t': '\u6253\u5f00\u5f00\u53d1\u8005\u6a21\u5f0f', 'install.s2d': '\u5730\u5740\u680f\u8f93\u5165 chrome://extensions\uff0c\u6253\u5f00\u53f3\u4e0a\u89d2\u7684\u300c\u5f00\u53d1\u8005\u6a21\u5f0f\u300d',
+      'install.s3t': '\u62d6\u5165\u6587\u4ef6\u5939', 'install.s3d': '\u628a\u89e3\u538b\u51fa\u6765\u7684\u6587\u4ef6\u5939\u62d6\u8fdb\u9875\u9762\uff0cTaber \u5c31\u4f1a\u51fa\u73b0\u5728\u4fa7\u8fb9\u680f',
       'footer.tag': '\u4f1a\u52a8\u624b\u7684\u6d4f\u89c8\u5668 Agent\u3002',
       'footer.copy': '\u00a9 2025 Taber contributors \u00b7 \u4f1a\u8bdd\u3001\u6587\u4ef6\u4e0e\u6280\u80fd\u4ece\u4e0d\u51fa\u672c\u673a\u3002'
     }
